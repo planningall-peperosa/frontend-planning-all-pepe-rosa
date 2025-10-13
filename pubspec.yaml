@@ -1,0 +1,53 @@
+name: fic_frontend # 12 giugno, versione funzionante a parte modifiche foto preventivi
+description: A new Flutter project.
+publish_to: 'none' # Remove this line if you wish to publish to pub.dev
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.0.0 <4.0.0" # Assicurati che questa versione sia compatibile con la tua versione di Flutter/Dart
+
+dependencies:
+  flutter:
+    sdk: flutter
+  http: ^1.2.1
+  shared_preferences: ^2.5.3
+  provider: ^6.1.5+1
+  intl: ^0.20.2
+  permission_handler: ^11.3.1 
+  #share_plus: ^7.2.2 
+  file_selector: ^1.0.3
+  #file_saver: ^0.2.12
+  signature: ^5.3.0
+
+  share_plus: ^10.0.2
+  file_saver: ^0.2.14
+  cross_file: ^0.3.4+2
+  url_launcher: ^6.3.0
+  font_awesome_flutter: ^10.7.0
+  vibration: any
+  
+  
+
+  
+
+
+
+  flutter_localizations: # Pacchetto per le localizzazioni
+    sdk: flutter         # Indentato correttamente sotto flutter_localizations
+  image_picker: ^1.0.7    # Per selezionare immagini dalla galleria
+  path_provider: ^2.1.5   # Per trovare percorsi di directory locali
+  uuid: ^4.3.3            # Per generare ID unici per i preventivi
+  photo_view: ^0.15.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^2.0.0 # O la versione che stai usando.
+  
+  
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/images/
+
