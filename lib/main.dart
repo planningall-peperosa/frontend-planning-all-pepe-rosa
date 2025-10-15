@@ -11,6 +11,11 @@ import 'package:intl/date_symbol_data_local.dart';
 import 'package:intl/intl.dart';
 import 'dart:async';
 
+// --- AGGIUNTA: IMPORT PER FIREBASE ---
+import 'package:firebase_core/firebase_core.dart';
+import 'firebase_options.dart';
+// --- FINE AGGIUNTA ---
+
 import 'config/app_config.dart';
 import 'package:flutter/foundation.dart' show kDebugMode;
 
@@ -53,6 +58,12 @@ final GlobalKey<ScaffoldMessengerState> scaffoldMessengerKey = GlobalKey<Scaffol
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  // --- AGGIUNTA: INIZIALIZZAZIONE FIREBASE ---
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
+  // --- FINE AGGIUNTA ---
+
   FlutterError.onError = (FlutterErrorDetails details) {
     FlutterError.presentError(details);
     print(details.exceptionAsString());
@@ -93,8 +104,8 @@ class MyApp extends StatelessWidget {
       theme: appTheme,
       localizationsDelegates: const [
         GlobalMaterialLocalizations.delegate,
-        GlobalWidgetsLocalizations.delegate,
-        GlobalCupertinoLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate, // <-- CORRETTO
+        GlobalCupertinoLocalizations.delegate, // <-- CORRETTO
       ],
       supportedLocales: const [
         Locale('it', 'IT'),

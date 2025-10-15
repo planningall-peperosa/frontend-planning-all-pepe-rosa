@@ -1,4 +1,6 @@
 // lib/models/cliente.dart
+import 'package:cloud_firestore/cloud_firestore.dart';
+
 class Cliente {
   final String idCliente;
   final String tipo;
@@ -50,6 +52,15 @@ class Cliente {
       note: json['note']?.toString(),
       conteggioPreventivi: conteggio,
     );
+  }
+
+  // --- NUOVA AGGIUNTA: TRADUTTORE DA FIRESTORE ---
+  factory Cliente.fromFirestore(DocumentSnapshot doc) {
+    final data = doc.data() as Map<String, dynamic>;
+    // Riutilizziamo la logica fromJson che gestisce già i nomi dei campi diversi,
+    // ma ci assicuriamo di usare l'ID del documento Firestore come ID primario.
+    data['id_cliente'] = doc.id;
+    return Cliente.fromJson(data);
   }
 
   factory Cliente.empty() {

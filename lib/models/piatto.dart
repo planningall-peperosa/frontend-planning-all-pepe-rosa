@@ -1,4 +1,6 @@
 // lib/models/piatto.dart
+import 'package:cloud_firestore/cloud_firestore.dart';
+
 class Piatto {
   final String idUnico;
   final String genere;
@@ -42,6 +44,13 @@ class Piatto {
       tipologia:   _asString(json['tipologia']) ?? '',
     );
   }
+  
+  // --- NUOVA AGGIUNTA: TRADUTTORE DA FIRESTORE ---
+  factory Piatto.fromFirestore(DocumentSnapshot doc) {
+    final data = doc.data() as Map<String, dynamic>;
+    // Riutilizziamo la logica fromJson che gestisce già i nomi dei campi diversi
+    return Piatto.fromJson(data);
+  }
 
   Piatto copyWith({
     String? idUnico,
@@ -66,10 +75,10 @@ class Piatto {
   Map<String, dynamic> toJson() => {
     'id_unico': idUnico,
     'genere': genere,
-    'piatto': nome,
+    'nome': nome, // Salviamo con 'nome' per coerenza
     'descrizione': descrizione,
     'allergeni': allergeni,
-    'link_foto_piatto': linkFoto,
+    'link_foto': linkFoto, // Salviamo con 'link_foto' per coerenza
     'tipologia': tipologia,
   };
 }

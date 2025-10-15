@@ -1,23 +1,23 @@
 // lib/screens/crea_preventivo_screen.dart
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../providers/preventivo_builder_provider.dart';
 import '../models/piatto.dart';
-import '../providers/menu_provider.dart';
 import '../models/menu_template.dart';
 import 'servizi_extra_screen.dart';
 import '../widgets/wizard_stepper.dart';
-import '../providers/piatti_provider.dart';
 import '../widgets/tipo_pasto_field.dart';
-
-// AGGIUNTE
 import 'dart:typed_data';
-import '../providers/preventivi_provider.dart';
 import '../widgets/firma_dialog.dart';
 
+import 'archivio_preventivi_screen.dart';
+
 class CreaPreventivoScreen extends StatefulWidget {
-  const CreaPreventivoScreen({super.key});
+  final String? preventivoId;
+
+  const CreaPreventivoScreen({super.key, this.preventivoId});
 
   @override
   State<CreaPreventivoScreen> createState() => _CreaPreventivoScreenState();
@@ -28,38 +28,104 @@ class _CreaPreventivoScreenState extends State<CreaPreventivoScreen> {
   Map<String, List<Piatto>> _menuInCostruzione = {};
   late TextEditingController _prezzoManualeController;
 
+  bool _isLoading = true;
+  bool _isSaving = false;
+
+  late Future<List<MenuTemplate>> _menuTemplatesFuture;
+
   @override
   void initState() {
     super.initState();
     _prezzoManualeController = TextEditingController();
+    _menuTemplatesFuture = _caricaMenuTemplates(); 
 
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      final menuProvider = Provider.of<MenuProvider>(context, listen: false);
-      final preventivoBuilder = Provider.of<PreventivoBuilderProvider>(context, listen: false);
-
-      if (menuProvider.tuttiIMenuTemplates.isEmpty) {
-        await menuProvider.caricaDatiMenu();
+      if (widget.preventivoId != null) {
+        await _caricaDatiPreventivo(widget.preventivoId!);
+      } else {
+        Provider.of<PreventivoBuilderProvider>(context, listen: false).reset();
+        setState(() => _isLoading = false);
       }
-
-      setState(() {
-        _menuInCostruzione = Map.from(preventivoBuilder.menu);
-
-        if (preventivoBuilder.nomeMenuTemplate != null) {
-          try {
-            _selectedTemplate = menuProvider.tuttiIMenuTemplates
-                .firstWhere((t) => t.nomeMenu == preventivoBuilder.nomeMenuTemplate);
-          } catch (_) {
-            _selectedTemplate = null;
-          }
-        }
-
-        if (preventivoBuilder.prezzoMenuPersona > 0) {
-          _prezzoManualeController.text =
-              preventivoBuilder.prezzoMenuPersona.toStringAsFixed(2).replaceAll('.', ',');
-        }
-      });
     });
   }
+
+  Future<List<MenuTemplate>> _caricaMenuTemplates() async {
+    try {
+      final snapshot = await FirebaseFirestore.instance.collection('menu_templates').get();
+      return snapshot.docs.map((doc) => MenuTemplate.fromFirestore(doc)).toList();
+    } catch (e) {
+      // ignore: avoid_print
+      print("Errore caricamento templates: $e");
+      throw Exception("Impossibile caricare i menu predefiniti.");
+    }
+  }
+
+
+
+  Future<void> _caricaDatiPreventivo(String id) async {
+    try {
+      final doc = await FirebaseFirestore.instance.collection('preventivi').doc(id).get();
+
+      if (doc.exists && mounted) {
+        final data = doc.data() as Map<String, dynamic>;
+        final preventivoBuilder = Provider.of<PreventivoBuilderProvider>(context, listen: false);
+        
+        // --- MODIFICA CHIAVE: Passiamo l'ID al provider ---
+        preventivoBuilder.caricaDaFirestoreMap(data, id: id);
+
+        final templates = await _menuTemplatesFuture;
+        
+        setState(() {
+          _menuInCostruzione = Map.from(preventivoBuilder.menu);
+          if (preventivoBuilder.nomeMenuTemplate != null) {
+            try {
+              _selectedTemplate = templates.firstWhere((t) => t.nomeMenu == preventivoBuilder.nomeMenuTemplate);
+            } catch (_) {
+              _selectedTemplate = null;
+            }
+          }
+          if (preventivoBuilder.prezzoMenuAdulto > 0) {
+            _prezzoManualeController.text = preventivoBuilder.prezzoMenuAdulto.toStringAsFixed(2).replaceAll('.', ',');
+          }
+        });
+
+      } else {
+        if(mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Preventivo non trovato.')));
+      }
+    } catch (e) {
+      if(mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Errore nel caricamento: $e')));
+    } finally {
+      if(mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _salvaPreventivo() async {
+    setState(() => _isSaving = true);
+    final scaffoldMessenger = ScaffoldMessenger.of(context);
+
+    try {
+      final builder = Provider.of<PreventivoBuilderProvider>(context, listen: false);
+      final dataToSave = builder.toFirestoreMap();
+      final preventivoId = builder.preventivoId; // Usiamo l'ID memorizzato nel provider
+
+      if (preventivoId != null && preventivoId.isNotEmpty) {
+        // Modalità AGGIORNAMENTO
+        await FirebaseFirestore.instance.collection('preventivi').doc(preventivoId).update(dataToSave);
+      } else {
+        // Modalità CREAZIONE
+        final newDoc = await FirebaseFirestore.instance.collection('preventivi').add(dataToSave);
+        builder.setPreventivoId(newDoc.id); // Memorizza il nuovo ID per i salvataggi futuri
+      }
+
+      scaffoldMessenger.showSnackBar(const SnackBar(content: Text('Preventivo salvato!'), backgroundColor: Colors.green));
+
+    } catch (e) {
+      scaffoldMessenger.showSnackBar(SnackBar(content: Text('Errore durante il salvataggio: $e'), backgroundColor: Colors.red));
+    } finally {
+      if(mounted) setState(() => _isSaving = false);
+    }
+  }
+
 
   @override
   void dispose() {
@@ -71,26 +137,43 @@ class _CreaPreventivoScreenState extends State<CreaPreventivoScreen> {
     context.read<PreventivoBuilderProvider>().setMenu(_menuInCostruzione);
   }
 
-  void _aggiornaMenuDaTemplate(MenuTemplate? template, MenuProvider provider) {
+  Future<void> _aggiornaMenuDaTemplate(MenuTemplate? template) async {
     setState(() {
+      _isLoading = true;
       _menuInCostruzione.clear();
-      if (template == null) return;
-
-      template.composizioneDefault.forEach((genere, List<String> piattoIds) {
-        if (piattoIds.isNotEmpty) {
-          _menuInCostruzione[genere] = [];
-          for (var id in piattoIds) {
-            try {
-              final piatto = provider.tuttiIpiatti.firstWhere((p) => p.idUnico == id);
-              _menuInCostruzione[genere]?.add(piatto);
-            } catch (_) {
-              // ignoro gli ID non trovati
-            }
-          }
-        }
-      });
     });
-    _commitMenuToProvider(); // << commit immediato
+
+    if (template == null) {
+      setState(() => _isLoading = false);
+      _commitMenuToProvider();
+      return;
+    }
+
+    try {
+      final Map<String, List<Piatto>> nuovoMenu = {};
+      final composizione = template.composizioneDefault;
+
+      for (var genere in composizione.keys) {
+        final piattoIds = composizione[genere]!;
+        if (piattoIds.isEmpty) continue;
+        
+        final piattiSnapshot = await FirebaseFirestore.instance
+            .collection('piatti')
+            .where('id_unico', whereIn: piattoIds)
+            .get();
+        
+        final piattiRecuperati = piattiSnapshot.docs.map((doc) => Piatto.fromFirestore(doc)).toList();
+        nuovoMenu[genere] = piattiRecuperati;
+      }
+
+      setState(() => _menuInCostruzione = nuovoMenu);
+      _commitMenuToProvider();
+
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Errore nel caricare i piatti del template: $e")));
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
   }
 
   void _rimuoviPiatto(String genere, Piatto piattoDaRimuovere) {
@@ -100,7 +183,7 @@ class _CreaPreventivoScreenState extends State<CreaPreventivoScreen> {
         _menuInCostruzione.remove(genere);
       }
     });
-    _commitMenuToProvider(); // << commit immediato
+    _commitMenuToProvider();
   }
 
   void _aggiungiPiatti(String genere, List<Piatto> piattiDaAggiungere) {
@@ -110,184 +193,15 @@ class _CreaPreventivoScreenState extends State<CreaPreventivoScreen> {
       }
       _menuInCostruzione[genere]?.addAll(piattiDaAggiungere);
     });
-    _commitMenuToProvider(); // << commit immediato
+    _commitMenuToProvider();
   }
 
-  // (non utilizzata, lascio per eventuale uso futuro)
-  void _applyTemplateToBuilder(MenuTemplate template) {
-    final preventivoBuilder = context.read<PreventivoBuilderProvider>();
-    final piattiProv = context.read<PiattiProvider>();
+  Future<void> _mostraDialogAggiungiPortata() async {
+    final categorieSnapshot = await FirebaseFirestore.instance.collection('piatti').get();
+    final tutteLeCategorie = categorieSnapshot.docs.map((doc) => doc.data()['genere'] as String).toSet();
+    
+    final categorieMancanti = tutteLeCategorie.where((cat) => !_menuInCostruzione.containsKey(cat)).toList();
 
-    final Map<String, List<Piatto>> nuovoMenu = {};
-    template.composizioneDefault.forEach((genere, ids) {
-      final List<Piatto> lista = [];
-      for (final id in ids) {
-        final found = piattiProv.piatti.cast<Piatto?>()
-            .firstWhere((p) => p != null && p!.idUnico == id, orElse: () => null);
-        if (found != null) lista.add(found);
-      }
-      if (lista.isNotEmpty) nuovoMenu[genere] = lista;
-    });
-
-    preventivoBuilder.setPrezzoDaTemplate(template);
-    preventivoBuilder.setMenu(nuovoMenu);
-  }
-
-  Future<void> _mostraDialogSelezionePiatto(String genere, MenuProvider provider) async {
-    final piattiDisponibili = provider.tuttiIpiatti.where((p) => p.genere == genere).toList();
-
-    final List<Piatto> piattiMultiSelezionati = [];
-    bool isMultiSelectMode = false;
-    final TextEditingController customCtrl = TextEditingController();
-
-    await showDialog(
-      context: context,
-      barrierDismissible: true,
-      builder: (BuildContext context) {
-        return StatefulBuilder(
-          builder: (context, setStateDialog) {
-            final theme = Theme.of(context);
-
-            void addCustom() {
-              final name = customCtrl.text.trim();
-              if (name.isEmpty) return;
-              final customPiatto = Piatto(
-                idUnico: 'custom_${DateTime.now().millisecondsSinceEpoch}',
-                genere: genere,
-                nome: name,
-                tipologia: 'custom',
-              );
-              _aggiungiPiatti(genere, [customPiatto]); // commit inside
-              Navigator.of(context).pop();
-            }
-
-            final hasCustom = customCtrl.text.trim().isNotEmpty;
-
-            return AlertDialog(
-              title: Text('Seleziona ${genere.toLowerCase()}'),
-              contentPadding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-              content: ConstrainedBox(
-                constraints: BoxConstraints(
-                  minWidth: 300,
-                  maxHeight: MediaQuery.of(context).size.height * 0.75,
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    TextField(
-                      controller: customCtrl,
-                      decoration: const InputDecoration(
-                        labelText: 'Nome piatto (fuori menu)',
-                        border: OutlineInputBorder(),
-                      ),
-                      textInputAction: TextInputAction.done,
-                      onChanged: (_) {
-                        if (customCtrl.text.trim().isNotEmpty) {
-                          setStateDialog(() {
-                            isMultiSelectMode = false;
-                            piattiMultiSelezionati.clear();
-                          });
-                        }
-                      },
-                      onSubmitted: (_) => addCustom(),
-                    ),
-                    const SizedBox(height: 12),
-                    Expanded(
-                      child: IgnorePointer(
-                        ignoring: hasCustom,
-                        child: ListView.builder(
-                          itemCount: piattiDisponibili.length,
-                          itemBuilder: (context, index) {
-                            final piatto = piattiDisponibili[index];
-                            final isSelected = piattiMultiSelezionati.contains(piatto);
-                            final isAlreadyInMenu = _menuInCostruzione[genere]
-                                    ?.any((p) => p.idUnico == piatto.idUnico) ??
-                                false;
-
-                            return GestureDetector(
-                              onLongPress: (hasCustom || isAlreadyInMenu)
-                                  ? null
-                                  : () => setStateDialog(() {
-                                        isMultiSelectMode = true;
-                                        if (isSelected) {
-                                          piattiMultiSelezionati.remove(piatto);
-                                        } else {
-                                          piattiMultiSelezionati.add(piatto);
-                                        }
-                                      }),
-                              onTap: (hasCustom || isAlreadyInMenu)
-                                  ? null
-                                  : () {
-                                      if (isMultiSelectMode) {
-                                        setStateDialog(() {
-                                          if (isSelected) {
-                                            piattiMultiSelezionati.remove(piatto);
-                                          } else {
-                                            piattiMultiSelezionati.add(piatto);
-                                          }
-                                        });
-                                      } else {
-                                        _aggiungiPiatti(genere, [piatto]); // commit inside
-                                        Navigator.of(context).pop();
-                                      }
-                                    },
-                              child: ListTile(
-                                enabled: !isAlreadyInMenu && !hasCustom,
-                                title: Text(piatto.nome),
-                                subtitle: isAlreadyInMenu ? const Text("Già aggiunto") : null,
-                                tileColor: (isMultiSelectMode && isSelected)
-                                    ? theme.colorScheme.secondary.withOpacity(0.25)
-                                    : null,
-                              ),
-                            );
-                          },
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: OutlinedButton(
-                            onPressed: () => Navigator.of(context).pop(),
-                            child: const Text('Annulla'),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: ElevatedButton(
-                            onPressed: hasCustom
-                                ? addCustom
-                                : (isMultiSelectMode && piattiMultiSelezionati.isNotEmpty)
-                                    ? () {
-                                        _aggiungiPiatti(genere, piattiMultiSelezionati); // commit inside
-                                        Navigator.of(context).pop();
-                                      }
-                                    : null,
-                            child: Text(
-                              hasCustom
-                                  ? 'Aggiungi (fuori menu)'
-                                  : (isMultiSelectMode
-                                      ? 'Aggiungi (${piattiMultiSelezionati.length})'
-                                      : 'Aggiungi'),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            );
-          },
-        );
-      },
-    );
-  }
-
-  Future<void> _mostraDialogAggiungiPortata(MenuProvider provider) async {
-    final categorieMancanti =
-        provider.tutteLeCategorie.where((cat) => !_menuInCostruzione.containsKey(cat)).toList();
     if (categorieMancanti.isEmpty) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -296,8 +210,10 @@ class _CreaPreventivoScreenState extends State<CreaPreventivoScreen> {
       }
       return;
     }
+
     List<String> categorieSelezionate = [];
     bool isMultiSelectMode = false;
+    
     await showDialog(
       context: context,
       builder: (BuildContext context) {
@@ -333,7 +249,7 @@ class _CreaPreventivoScreenState extends State<CreaPreventivoScreen> {
                           });
                         } else {
                           setState(() => _menuInCostruzione[cat] = []);
-                          _commitMenuToProvider(); // << commit
+                          _commitMenuToProvider();
                           Navigator.of(context).pop();
                         }
                       },
@@ -363,7 +279,7 @@ class _CreaPreventivoScreenState extends State<CreaPreventivoScreen> {
                                     _menuInCostruzione[cat] = [];
                                   }
                                 });
-                                _commitMenuToProvider(); // << commit
+                                _commitMenuToProvider();
                                 Navigator.of(context).pop();
                               },
                       ),
@@ -376,7 +292,6 @@ class _CreaPreventivoScreenState extends State<CreaPreventivoScreen> {
     );
   }
 
-  // --- Selettore PRANZO/CENA integrato (niente widget esterno) ---
   Widget _buildTipoPastoSelector() {
     return Consumer<PreventivoBuilderProvider>(
       builder: (context, builder, _) {
@@ -388,20 +303,15 @@ class _CreaPreventivoScreenState extends State<CreaPreventivoScreen> {
               style: TextStyle(fontWeight: FontWeight.w600),
             ),
             const SizedBox(height: 6),
-            const TipoPastoField(required: true), // se vuoi renderlo obbligatorio,),
+            const TipoPastoField(required: true),
           ],
         );
       },
     );
   }
 
-  // -------- FIRMA & CONFERMA ----------
   Future<void> _firmaEConferma() async {
-    // Recupero preventivoId passato via arguments (se presente)
-    final String? preventivoId =
-        ModalRoute.of(context)?.settings.arguments is String
-            ? ModalRoute.of(context)!.settings.arguments as String
-            : null;
+    final String? preventivoId = widget.preventivoId;
 
     if (preventivoId == null || preventivoId.isEmpty) {
       if (!mounted) return;
@@ -411,7 +321,6 @@ class _CreaPreventivoScreenState extends State<CreaPreventivoScreen> {
       return;
     }
 
-    // Dialog firma
     final Uint8List? pngBytes = await showDialog<Uint8List?>(
       context: context,
       barrierDismissible: false,
@@ -426,77 +335,86 @@ class _CreaPreventivoScreenState extends State<CreaPreventivoScreen> {
       return;
     }
 
-    // Upload firma + conferma
-    final prov = context.read<PreventiviProvider>();
-    final ok = await prov.caricaFirmaEConferma(preventivoId, pngBytes);
-
-    if (!mounted) return;
-    final msg = prov.errorSaving ?? prov.successMessage ?? (ok ? 'Preventivo confermato.' : 'Errore durante la conferma.');
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+    try {
+      await FirebaseFirestore.instance.collection('preventivi').doc(preventivoId).update({
+        'status': 'Confermato',
+        'data_conferma': Timestamp.now(),
+        // 'firma_url': urlDaStorage,
+      });
+       if(mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Preventivo confermato!')));
+    } catch(e) {
+       if(mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Errore: $e')));
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Crea Preventivo'),
+        title: Text(widget.preventivoId == null ? 'Crea Preventivo' : 'Modifica Preventivo'),
         leading: IconButton(
           icon: const Icon(Icons.close),
           onPressed: () {
-            Provider.of<PreventivoBuilderProvider>(context, listen: false).reset();
+            if (widget.preventivoId == null) {
+              Provider.of<PreventivoBuilderProvider>(context, listen: false).reset();
+            }
             Navigator.of(context).pop();
           },
         ),
         actions: [
-          // NUOVA AZIONE: Esci senza salvare e torna alla Home
-          IconButton(
-            tooltip: 'Esci senza salvare (Home)',
-            icon: const Icon(Icons.home_outlined),
-            onPressed: () async {
-              final conferma = await showDialog<bool>(
-                context: context,
-                builder: (ctx) => AlertDialog(
-                  title: const Text('Uscire senza salvare?'),
-                  content: const Text('Le modifiche non salvate andranno perse.'),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.of(ctx).pop(false),
-                      child: const Text('Annulla'),
-                    ),
-                    TextButton(
-                      onPressed: () => Navigator.of(ctx).pop(true),
-                      child: const Text('Esci'),
-                    ),
-                  ],
-                ),
-              );
-              if (conferma == true && mounted) {
-                // Reset del builder e ritorno alla Home
-                Provider.of<PreventivoBuilderProvider>(context, listen: false).reset();
-                Navigator.of(context).popUntil((route) => route.isFirst);
+          // Pulsante SALVA
+          if (!_isSaving)
+            IconButton(
+              tooltip: 'Salva stato attuale',
+              icon: const Icon(Icons.save),
+              onPressed: _salvaPreventivo, // Usa la funzione di salvataggio corretta per questa schermata
+            )
+          else 
+            const Padding(
+              padding: EdgeInsets.all(16.0),
+              child: SizedBox(width: 24, height: 24, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2,)),
+            ),
 
-                // In alternativa, se usi route nominata per la Home:
-                // Navigator.of(context).pushNamedAndRemoveUntil('/home', (route) => false);
-              }
+          // Pulsante PREVENTIVI
+          IconButton(
+            tooltip: 'Torna ai Preventivi',
+            icon: const Icon(Icons.inventory_2_outlined),
+            onPressed: () {
+              Navigator.of(context).popUntil((route) => route.isFirst);
+              Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ArchivioPreventiviScreen()));
             },
           ),
-        ],
+
+          // Pulsante HOME
+          IconButton(
+            tooltip: 'Torna alla Home',
+            icon: const Icon(Icons.home_outlined),
+            onPressed: () {
+              Navigator.of(context).popUntil((route) => route.isFirst);
+            },
+          ),
+        ],      
       ),
-      body: Consumer<MenuProvider>(
-        builder: (context, menuProvider, child) {
-          if (menuProvider.isLoading && menuProvider.tuttiIMenuTemplates.isEmpty) {
+      body: FutureBuilder<List<MenuTemplate>>(
+        future: _menuTemplatesFuture,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting || _isLoading) {
             return const Center(child: CircularProgressIndicator());
           }
-          if (menuProvider.errore != null) {
-            return Center(child: Text('Errore: ${menuProvider.errore}'));
+          if (snapshot.hasError) {
+            return Center(child: Text("Errore fatale: ${snapshot.error}"));
           }
-          return _buildBody(menuProvider);
+          if (!snapshot.hasData) {
+            return const Center(child: Text("Nessun menu predefinito trovato."));
+          }
+          final templates = snapshot.data!;
+          return _buildBody(templates);
         },
       ),
     );
   }
 
-  Widget _buildBody(MenuProvider menuProvider) {
+  Widget _buildBody(List<MenuTemplate> menuTemplates) {
     final preventivoBuilder = Provider.of<PreventivoBuilderProvider>(context);
     final bool mostraPrezzoManuale = _selectedTemplate == null;
 
@@ -514,7 +432,7 @@ class _CreaPreventivoScreenState extends State<CreaPreventivoScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                _buildTemplateSelector(menuProvider),
+                _buildTemplateSelector(menuTemplates),
 
                 if (mostraPrezzoManuale) ...[
                   const SizedBox(height: 12),
@@ -528,19 +446,18 @@ class _CreaPreventivoScreenState extends State<CreaPreventivoScreen> {
                     keyboardType: const TextInputType.numberWithOptions(decimal: true),
                     onChanged: (value) {
                       final prezzo = double.tryParse(value.replaceAll(',', '.')) ?? 0.0;
-                      preventivoBuilder.setPrezzoManuale(prezzo);
+                      preventivoBuilder.setPrezzoMenuAdulto(prezzo);
                     },
                   ),
                 ],
 
-                // --- Selettore Pranzo/Cena (obbligatorio) ---
                 const SizedBox(height: 12),
                 _buildTipoPastoSelector(),
                 const SizedBox(height: 12),
 
                 const SizedBox(height: 24),
                 const Divider(),
-                _buildMenuComposition(menuProvider),
+                _buildMenuComposition(),
                 const SizedBox(height: 16),
                 Center(
                   child: ElevatedButton.icon(
@@ -550,7 +467,7 @@ class _CreaPreventivoScreenState extends State<CreaPreventivoScreen> {
                       backgroundColor: Colors.grey.shade200,
                       foregroundColor: Colors.black87,
                     ),
-                    onPressed: () => _mostraDialogAggiungiPortata(menuProvider),
+                    onPressed: _mostraDialogAggiungiPortata,
                   ),
                 ),
               ],
@@ -588,7 +505,6 @@ class _CreaPreventivoScreenState extends State<CreaPreventivoScreen> {
             onPressed: () {
               final builder = Provider.of<PreventivoBuilderProvider>(context, listen: false);
 
-              // Validazione Tipo Pasto
               if (builder.tipoPasto == null || builder.tipoPasto!.isEmpty) {
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(content: Text('Seleziona Pranzo o Cena per proseguire.')),
@@ -596,7 +512,6 @@ class _CreaPreventivoScreenState extends State<CreaPreventivoScreen> {
                 return;
               }
 
-              // Commit finale del menu in Provider prima di navigare
               _commitMenuToProvider();
 
               Navigator.push(
@@ -604,8 +519,8 @@ class _CreaPreventivoScreenState extends State<CreaPreventivoScreen> {
                 MaterialPageRoute(builder: (_) => const ServiziExtraScreen()),
               );
             },
-            child: Row(
-              children: const [
+            child: const Row(
+              children: [
                 Text('Servizi'),
                 SizedBox(width: 8),
                 Icon(Icons.arrow_forward_ios),
@@ -617,27 +532,28 @@ class _CreaPreventivoScreenState extends State<CreaPreventivoScreen> {
     );
   }
 
-  Widget _buildTemplateSelector(MenuProvider menuProvider) {
+  Widget _buildTemplateSelector(List<MenuTemplate> templates) {
     return DropdownButtonFormField<MenuTemplate?>(
       value: _selectedTemplate,
       items: [
         const DropdownMenuItem<MenuTemplate?>(value: null, child: Text('Crea Menu da Zero')),
-        ...menuProvider.tuttiIMenuTemplates.map((template) {
+        ...templates.map((template) {
           return DropdownMenuItem<MenuTemplate>(
             value: template,
+            // --- MODIFICA CORRETTIVA ---
             child: Text('${template.nomeMenu} (€${template.prezzo.toStringAsFixed(2)})'),
           );
         }).toList(),
       ],
       onChanged: (MenuTemplate? newValue) {
         final builder = Provider.of<PreventivoBuilderProvider>(context, listen: false);
-        setState(() {
-          _selectedTemplate = newValue;
-          _aggiornaMenuDaTemplate(newValue, menuProvider); // include commit
-        });
+        setState(() => _selectedTemplate = newValue);
+        
+        _aggiornaMenuDaTemplate(newValue);
 
         if (newValue != null) {
           builder.setPrezzoDaTemplate(newValue);
+          // --- MODIFICA CORRETTIVA ---
           _prezzoManualeController.text = newValue.prezzo.toStringAsFixed(2).replaceAll('.', ',');
         } else {
           builder.resetPrezzoMenu();
@@ -652,7 +568,7 @@ class _CreaPreventivoScreenState extends State<CreaPreventivoScreen> {
     );
   }
 
-  Widget _buildMenuComposition(MenuProvider menuProvider) {
+  Widget _buildMenuComposition() {
     const ordineCorrettoPortate = ['antipasto', 'primo', 'secondo', 'contorno', 'piatto_unico'];
     final chiaviOrdinate = _menuInCostruzione.keys.toList()
       ..sort((a, b) {
@@ -719,7 +635,7 @@ class _CreaPreventivoScreenState extends State<CreaPreventivoScreen> {
               child: TextButton.icon(
                 icon: const Icon(Icons.add),
                 label: Text("Aggiungi ${genere.toLowerCase()}"),
-                onPressed: () => _mostraSheetSelezionePiatto(genere, menuProvider),
+                onPressed: () => _mostraSheetSelezionePiatto(genere),
               ),
             ),
             const Divider(height: 24),
@@ -729,9 +645,9 @@ class _CreaPreventivoScreenState extends State<CreaPreventivoScreen> {
     );
   }
 
-  // --------- UX tastiera: AnimatedPadding + DraggableScrollableSheet ---------
-  Future<void> _mostraSheetSelezionePiatto(String genere, MenuProvider provider) async {
-    final piattiDisponibili = provider.tuttiIpiatti.where((p) => p.genere == genere).toList();
+  Future<void> _mostraSheetSelezionePiatto(String genere) async {
+    final piattiDisponibiliSnapshot = await FirebaseFirestore.instance.collection('piatti').where('genere', isEqualTo: genere).get();
+    final piattiDisponibili = piattiDisponibiliSnapshot.docs.map((doc) => Piatto.fromFirestore(doc)).toList();
 
     final List<Piatto> selezionati = [];
     bool multi = false;
@@ -742,7 +658,7 @@ class _CreaPreventivoScreenState extends State<CreaPreventivoScreen> {
       isScrollControlled: true,
       useSafeArea: true,
       backgroundColor: Theme.of(context).dialogBackgroundColor,
-      shape: RoundedRectangleBorder(
+      shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
       builder: (ctx) {
@@ -756,7 +672,7 @@ class _CreaPreventivoScreenState extends State<CreaPreventivoScreen> {
               nome: name,
               tipologia: 'custom',
             );
-            _aggiungiPiatti(genere, [custom]); // commit inside
+            _aggiungiPiatti(genere, [custom]);
             Navigator.of(ctx).pop();
           }
 
@@ -836,7 +752,7 @@ class _CreaPreventivoScreenState extends State<CreaPreventivoScreen> {
                                           }
                                         });
                                       } else {
-                                        _aggiungiPiatti(genere, [piatto]); // commit inside
+                                        _aggiungiPiatti(genere, [piatto]);
                                         Navigator.of(ctx).pop();
                                       }
                                     },
@@ -896,7 +812,7 @@ class _CreaPreventivoScreenState extends State<CreaPreventivoScreen> {
                                     ? addCustom
                                     : (multi && selezionati.isNotEmpty)
                                         ? () {
-                                            _aggiungiPiatti(genere, selezionati); // commit inside
+                                            _aggiungiPiatti(genere, selezionati);
                                             Navigator.of(ctx).pop();
                                           }
                                         : null,

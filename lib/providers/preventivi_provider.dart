@@ -11,6 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/preventivo_summary.dart';
 import '../models/preventivo_completo.dart';
 import '../services/preventivi_service.dart';
+import '../services/sync_service.dart';
 
 /// Converte una lista JSON (List<dynamic>/Map) in List<PreventivoSummary>
 List<PreventivoSummary> _parseSummaries(List<dynamic> raw) {
@@ -39,6 +40,7 @@ void _logCache(String msg) {
 
 class PreventiviProvider extends ChangeNotifier {
   final PreventiviService _service = PreventiviService();
+  final SyncService _sync = SyncService();
 
   // Stato per la cache completa
   List<PreventivoSummary> _cacheIndiciCompleta = [];
@@ -68,6 +70,7 @@ class PreventiviProvider extends ChangeNotifier {
   DateTime? _lastLocalSaveAt; // ultimo salvataggio locale che ha aggiornato la cache
   final Duration _versionCheckCooldown = const Duration(seconds: 5); // throttle
   final Duration _postSaveGrace = const Duration(seconds: 3); // grace dopo un nostro save
+  int _lastKnownSingleYearVersion = -1; // versione corrente anno attuale da /api/sync/versione
 
   // Getters
   bool get isSaving => _isSaving;
@@ -242,6 +245,40 @@ class PreventiviProvider extends ChangeNotifier {
     return await _service.getVersioniCache();
   }
 
+  /// Soft refresh leggero: interroga /api/sync/versione (anno corrente)
+  /// e se cambia, avvia `verificaVersioneCache()` per riallineare la cache locale.
+  Future<void> refreshIfNeeded() async {
+    if (_isEditingOpen) {
+      _logCache('refreshIfNeeded skipped (editing open)');
+      return;
+    }
+    final now = DateTime.now();
+    if (_lastVersionCheckAt != null &&
+        now.difference(_lastVersionCheckAt!) < _versionCheckCooldown) {
+      _logCache('refreshIfNeeded throttled (${now.difference(_lastVersionCheckAt!).inMilliseconds}ms)');
+      return;
+    }
+    if (_lastLocalSaveAt != null &&
+        now.difference(_lastLocalSaveAt!) < _postSaveGrace) {
+      _logCache('refreshIfNeeded grace after local save (${now.difference(_lastLocalSaveAt!).inMilliseconds}ms)');
+      return;
+    }
+    try {
+      // v può essere null: forziamo un fallback non nullo
+      final int v = await _sync.getVersioneCorrente() ?? _lastKnownSingleYearVersion;
+      _lastVersionCheckAt = DateTime.now();
+      if (v != _lastKnownSingleYearVersion) {
+        _logCache('refreshIfNeeded: server single-year version changed ($_lastKnownSingleYearVersion -> $v), verifying full map…');
+        _lastKnownSingleYearVersion = v;
+        await verificaVersioneCache();
+      } else {
+        _logCache('refreshIfNeeded: single-year version unchanged ($v)');
+      }
+    } catch (e) {
+      _logCache('refreshIfNeeded error: $e');
+      // fallback soft: non forziamo nulla qui
+    }
+  }
 
   // --- REFRESH INTELLIGENTE IN BACKGROUND (non blocca la UI) ---
   Future<void> verificaVersioneCache() async {
@@ -802,5 +839,11 @@ class PreventiviProvider extends ChangeNotifier {
     }
     total.stop();
     _logCache('_setStatusLocal TOTAL ${total.elapsedMilliseconds}ms (touched=$touched)');
+  }
+
+  @override
+  void dispose() {
+    try { _sync.dispose(); } catch (_) {}
+    super.dispose();
   }
 }

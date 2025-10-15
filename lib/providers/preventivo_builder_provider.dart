@@ -3,6 +3,9 @@ import 'dart:convert';
 import 'package:intl/intl.dart';
 import 'package:flutter/foundation.dart';
 
+// --- MODIFICA: IMPORT PER FIREBASE ---
+import 'package:cloud_firestore/cloud_firestore.dart';
+
 import '../models/cliente.dart';
 import '../models/piatto.dart';
 import '../models/servizio_selezionato.dart';
@@ -29,10 +32,10 @@ class PreventivoBuilderProvider with ChangeNotifier {
   DateTime? _dataEvento;
   int? _numeroOspiti;
 
-  // Bambini
+  // --- MODIFICA: RINOMINATO PER CHIAREZZA ---
   int _numeroBambini = 0;
   double _prezzoMenuBambino = 0.0;
-  String? _noteMenuBambini;
+  String? _menuBambini; // Ex _noteMenuBambini
 
   final Map<String, ServizioSelezionato> _serviziExtra = {};
 
@@ -42,8 +45,8 @@ class PreventivoBuilderProvider with ChangeNotifier {
   DateTime? _dataCreazione;
   String? _nomeMenuTemplate;
 
-  // Prezzi / sconti
-  double _prezzoMenuPersona = 0.0;
+  // --- MODIFICA: RINOMINATO PER CHIAREZZA ---
+  double _prezzoMenuAdulto = 0.0; // Ex _prezzoMenuPersona
   bool _scontoAbilitato = false;
   double _sconto = 0.0;
   String? _noteSconto;
@@ -57,6 +60,106 @@ class PreventivoBuilderProvider with ChangeNotifier {
   bool _dirty = false;
   bool _hydrating = false;
   String? _baselineJson;
+
+  // =======================================================================
+  // --- NUOVI METODI DI TRADUZIONE PER FIRESTORE (AGGIORNATI) ---
+  // =======================================================================
+
+
+  void caricaDaFirestoreMap(Map<String, dynamic> data, {required String id}) {
+    _hydrating = true;
+    
+    reset(); 
+    _hydrating = true; 
+
+    // --- MODIFICA CHIAVE: Memorizziamo subito l'ID del preventivo ---
+    _preventivoId = id;
+
+    // Il resto della funzione rimane identico...
+    _nomeEvento = data['nome_evento'];
+    _numeroOspiti = data['numero_ospiti'];
+    _status = data['status'];
+    _nomeMenuTemplate = data['nome_menu_template'];
+    _sconto = (data['sconto'] as num?)?.toDouble() ?? 0.0;
+    _scontoAbilitato = _sconto > 0;
+    _noteSconto = data['note_sconto'];
+    _acconto = (data['acconto'] as num?)?.toDouble();
+    _tipoPasto = data['tipo_pasto'];
+
+    _prezzoMenuAdulto = (data['prezzo_menu_adulto'] as num?)?.toDouble() ?? 0.0;
+    _numeroBambini = data['numero_bambini'] ?? 0;
+    _prezzoMenuBambino = (data['prezzo_menu_bambino'] as num?)?.toDouble() ?? 0.0;
+    _menuBambini = data['menu_bambini'];
+
+    _dataEvento = (data['data_evento'] as Timestamp?)?.toDate();
+    _dataCreazione = (data['data_creazione'] as Timestamp?)?.toDate();
+    
+    if (data['cliente'] != null && data['cliente'] is Map) {
+      _cliente = Cliente.fromJson(data['cliente']);
+    }
+
+    if (data['menu'] is Map) {
+      final menuDaDb = data['menu'] as Map<String, dynamic>;
+      _menu.clear();
+      menuDaDb.forEach((genere, piattiList) {
+        if (piattiList is List) {
+          _menu[genere] = piattiList.map((piattoData) => Piatto.fromJson(piattoData)).toList();
+        }
+      });
+    }
+
+    if (data['servizi'] is List) {
+      final serviziDaDb = data['servizi'] as List;
+      _serviziExtra.clear();
+      for (var servizioData in serviziDaDb) {
+        if (servizioData is Map<String, dynamic>) {
+          final servizio = ServizioSelezionato.fromJson(servizioData);
+          _serviziExtra[servizio.ruolo] = servizio;
+        }
+      }
+    }
+    
+    _hydrating = false;
+    notifyListeners();
+  }
+
+
+  Map<String, dynamic> toFirestoreMap() {
+    return {
+      'cliente_id': _cliente?.idCliente,
+      'cliente': _cliente?.toJson(),
+      'nome_cliente': _cliente?.ragioneSociale,
+
+      'nome_evento': _nomeEvento,
+      'data_evento': _dataEvento != null ? Timestamp.fromDate(_dataEvento!) : null,
+      'numero_ospiti': _numeroOspiti,
+      'tipo_pasto': _tipoPasto,
+
+      // --- MODIFICA: SCRITTURA CAMPI RINOMINATI ---
+      'menu': _menuPerBackend(),
+      'prezzo_menu_adulto': _prezzoMenuAdulto, // Ex prezzo_menu_persona
+      'nome_menu_template': _nomeMenuTemplate,
+      'numero_bambini': _numeroBambini,
+      'prezzo_menu_bambino': _prezzoMenuBambino,
+      'menu_bambini': _menuBambini, // Ex note_menu_bambini
+
+      'servizi': _serviziExtra.values.map((s) => s.toJson()).toList(),
+
+      'sconto': _sconto,
+      'note_sconto': _noteSconto,
+      'acconto': _acconto,
+
+      'status': _status ?? 'Bozza',
+      'data_creazione': _dataCreazione ?? Timestamp.now(),
+      'data_modifica': Timestamp.now(),
+      'deleted_at': null,
+    };
+  }
+
+
+  // =======================================================================
+  // --- IL TUO CODICE ORIGINALE (CON VARIABILI RINOMINATE) ---
+  // =======================================================================
 
   bool get hasLocalChanges {
     final sw = Stopwatch()..start();
@@ -93,9 +196,10 @@ class PreventivoBuilderProvider with ChangeNotifier {
   DateTime? get dataEvento => _dataEvento;
   int? get numeroOspiti => _numeroOspiti;
 
+  // --- MODIFICA: GETTER RINOMINATI ---
   int get numeroBambini => _numeroBambini;
   double get prezzoMenuBambino => _prezzoMenuBambino;
-  String? get noteMenuBambini => _noteMenuBambini;
+  String? get menuBambini => _menuBambini; // Ex noteMenuBambini
 
   Map<String, ServizioSelezionato> get serviziExtra => _serviziExtra;
   String? get preventivoId => _preventivoId;
@@ -106,7 +210,8 @@ class PreventivoBuilderProvider with ChangeNotifier {
   String? get erroreSalvataggio => _erroreSalvataggio;
 
   String? get nomeMenuTemplate => _nomeMenuTemplate;
-  double get prezzoMenuPersona => _prezzoMenuPersona;
+  // --- MODIFICA: GETTER RINOMINATO ---
+  double get prezzoMenuAdulto => _prezzoMenuAdulto; // Ex prezzoMenuPersona
 
   bool get scontoAbilitato => _scontoAbilitato;
   double get sconto => _sconto;
@@ -122,8 +227,8 @@ class PreventivoBuilderProvider with ChangeNotifier {
     return ospiti - bb;
   }
 
-  double get costoMenuAdulti => _prezzoMenuPersona * _numeroAdulti;
-  // FIX typo: _prezzoMenuBambini -> _prezzoMenuBambino
+  // --- MODIFICA: CALCOLO CON CAMPO RINOMINATO ---
+  double get costoMenuAdulti => _prezzoMenuAdulto * _numeroAdulti;
   double get costoMenuBambini => _prezzoMenuBambino * _numeroBambini;
   double get costoMenu => costoMenuAdulti + costoMenuBambini;
 
@@ -272,36 +377,46 @@ class PreventivoBuilderProvider with ChangeNotifier {
     notifyListeners();
   }
 
-  void setNoteMenuBambini(String? v) {
+  // --- MODIFICA: SETTER RINOMINATO ---
+  void setMenuBambini(String? v) { // Ex setNoteMenuBambini
     final nv = (v ?? '').trim().isEmpty ? null : v!.trim();
-    if (_noteMenuBambini == nv) return;
-    _noteMenuBambini = nv;
+    if (_menuBambini == nv) return;
+    _menuBambini = nv;
     markDirty();
     notifyListeners();
   }
 
+
+  void setPreventivoId(String newId) {
+    if (_preventivoId == newId) return;
+    _preventivoId = newId;
+    // Non serve un notifyListeners() perché questo aggiorna solo lo stato interno
+    // per azioni successive come il salvataggio o la generazione del PDF.
+  }
+
   void setPrezzoDaTemplate(MenuTemplate template) {
-    if (_prezzoMenuPersona == template.prezzo &&
+    if (_prezzoMenuAdulto == template.prezzo &&
         _nomeMenuTemplate == template.nomeMenu) {
       return;
     }
-    _prezzoMenuPersona = template.prezzo;
+    _prezzoMenuAdulto = template.prezzo;
     _nomeMenuTemplate = template.nomeMenu;
     markDirty();
     notifyListeners();
   }
 
-  void setPrezzoManuale(double prezzo) {
-    if (_prezzoMenuPersona == prezzo && _nomeMenuTemplate == null) return;
-    _prezzoMenuPersona = prezzo;
+  // --- MODIFICA: RINOMINATO PER CHIAREZZA ---
+  void setPrezzoMenuAdulto(double prezzo) { // Ex setPrezzoManuale
+    if (_prezzoMenuAdulto == prezzo && _nomeMenuTemplate == null) return;
+    _prezzoMenuAdulto = prezzo;
     _nomeMenuTemplate = null;
     markDirty();
     notifyListeners();
   }
 
   void resetPrezzoMenu() {
-    if (_prezzoMenuPersona == 0.0 && _nomeMenuTemplate == null) return;
-    _prezzoMenuPersona = 0.0;
+    if (_prezzoMenuAdulto == 0.0 && _nomeMenuTemplate == null) return;
+    _prezzoMenuAdulto = 0.0;
     _nomeMenuTemplate = null;
     markDirty();
     notifyListeners();
@@ -443,7 +558,7 @@ class PreventivoBuilderProvider with ChangeNotifier {
     _status = p.status;
     _confermaPending = false;
     _dataCreazione = p.dataCreazione;
-    _prezzoMenuPersona = p.prezzoMenuPersona;
+    _prezzoMenuAdulto = p.prezzoMenuPersona; // Mantenuto per compatibilità con questo vecchio metodo
     _nomeMenuTemplate = p.nomeMenuTemplate;
     _sconto = p.sconto;
     _noteSconto = p.noteSconto;
@@ -453,7 +568,7 @@ class PreventivoBuilderProvider with ChangeNotifier {
 
     _numeroBambini = p.numeroBambini ?? 0;
     _prezzoMenuBambino = p.prezzoMenuBambino ?? 0.0;
-    _noteMenuBambini = p.noteMenuBambini;
+    _menuBambini = p.noteMenuBambini; // Mantenuto per compatibilità
 
     _dirty = false;
     _hydrating = false;
@@ -512,9 +627,9 @@ class PreventivoBuilderProvider with ChangeNotifier {
       'numero_ospiti': _numeroOspiti!,
       'numero_bambini': _numeroBambini,
       'prezzo_menu_bambino': _prezzoMenuBambino,
-      'note_menu_bambini': _noteMenuBambini,
+      'note_menu_bambini': _menuBambini, // Vecchio nome per compatibilità payload
       'servizi_extra': _serviziExtra.values.map((s) => s.toJson()).toList(),
-      'prezzo_menu_persona': _prezzoMenuPersona,
+      'prezzo_menu_persona': _prezzoMenuAdulto, // Vecchio nome per compatibilità payload
       'nome_menu_template': _nomeMenuTemplate,
       'sconto': _sconto,
       'note_sconto': _noteSconto,
@@ -656,14 +771,14 @@ class PreventivoBuilderProvider with ChangeNotifier {
 
     _numeroBambini = 0;
     _prezzoMenuBambino = 0.0;
-    _noteMenuBambini = null;
+    _menuBambini = null;
 
     _serviziExtra.clear();
     _preventivoId = null;
     _status = null;
     _dataCreazione = null;
     _erroreSalvataggio = null;
-    _prezzoMenuPersona = 0.0;
+    _prezzoMenuAdulto = 0.0;
     _scontoAbilitato = false;
     _sconto = 0.0;
     _noteSconto = null;
@@ -699,16 +814,13 @@ class PreventivoBuilderProvider with ChangeNotifier {
 
     final summary = await salvaPreventivo(preventiviProvider: preventiviProvider);
 
-    // NEW: refresh forzato anche se l’editor è aperto (mostra SUBITO il nuovo in Archivio)
     try {
       await preventiviProvider.hardRefresh(ignoreEditingOpen: true);
     } catch (_) {}
 
-    // baseline dopo duplicazione riuscita
     _dirty = false;
     _baselineJson = _safeSnapshotJson();
     notifyListeners();
     return summary;
   }
-
 }

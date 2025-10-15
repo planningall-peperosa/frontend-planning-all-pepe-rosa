@@ -1,9 +1,9 @@
 // lib/screens/cerca_cliente_screen.dart
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+
 import '../models/cliente.dart';
-import '../providers/clienti_provider.dart';
 import 'crea_contatto_screen.dart';
 import 'dettaglio_contatto_screen.dart';
 
@@ -17,28 +17,19 @@ class CercaClienteScreen extends StatefulWidget {
 
 class _CercaClienteScreenState extends State<CercaClienteScreen> {
   final _searchController = TextEditingController();
-  Timer? _debounce;
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      Provider.of<ClientiProvider>(context, listen: false).clearSearch();
+    _searchController.addListener(() {
+      setState(() {});
     });
   }
 
   @override
   void dispose() {
     _searchController.dispose();
-    _debounce?.cancel();
     super.dispose();
-  }
-
-  void _onSearchChanged(String query) {
-    if (_debounce?.isActive ?? false) _debounce!.cancel();
-    _debounce = Timer(const Duration(milliseconds: 500), () {
-      Provider.of<ClientiProvider>(context, listen: false).cercaContatti(query);
-    });
   }
 
   void _apriCreaContatto(String tipo) async {
@@ -51,22 +42,16 @@ class _CercaClienteScreenState extends State<CercaClienteScreen> {
         Navigator.of(context).pop(nuovoContatto);
       } else {
         _searchController.clear();
-        Provider.of<ClientiProvider>(context, listen: false).clearSearch();
       }
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final clientiProvider = Provider.of<ClientiProvider>(context);
-
     return Scaffold(
       appBar: AppBar(
-        // --- MODIFICA 1 ---
         title: const Text('Contatti'),
         actions: [
-          // --- MODIFICA 2 ---
-          // Il PopupMenuButton ora ha come "figlio" un pulsante con testo e icona
           PopupMenuButton<String>(
             onSelected: _apriCreaContatto,
             itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
@@ -101,56 +86,88 @@ class _CercaClienteScreenState extends State<CercaClienteScreen> {
               decoration: InputDecoration(
                 labelText: 'Cerca per nome, cognome, telefono...',
                 prefixIcon: const Icon(Icons.search),
-                suffixIcon: clientiProvider.isLoading
-                    ? const SizedBox(height: 10, width: 10, child: CircularProgressIndicator())
+                suffixIcon: _searchController.text.isNotEmpty
+                    ? IconButton(
+                        icon: const Icon(Icons.clear),
+                        onPressed: () {
+                          _searchController.clear();
+                        },
+                      )
                     : null,
               ),
-              onChanged: _onSearchChanged,
             ),
           ),
           Expanded(
-            child: _buildResultList(clientiProvider),
+            child: _buildResultList(),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildResultList(ClientiProvider clientiProvider) {
-    if (clientiProvider.isLoading && clientiProvider.contattiTrovati.isEmpty) {
-      return const Center(child: CircularProgressIndicator());
-    }
-    
-    if (clientiProvider.error != null && clientiProvider.contattiTrovati.isEmpty) {
-      return Center(child: Text(clientiProvider.error!));
-    }
+  Widget _buildResultList() {
+    return StreamBuilder<QuerySnapshot>(
+      stream: FirebaseFirestore.instance.collection('clienti').snapshots(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        
+        if (snapshot.hasError) {
+          return Center(child: Text('Errore: ${snapshot.error}'));
+        }
 
-    if (clientiProvider.contattiTrovati.isEmpty) {
-      return const Center(child: Text('Nessun contatto trovato.'));
-    }
+        if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+          return const Center(child: Text('Nessun contatto nel database.'));
+        }
 
-    return ListView.builder(
-      itemCount: clientiProvider.contattiTrovati.length,
-      itemBuilder: (context, index) {
-        final contatto = clientiProvider.contattiTrovati[index];
-        return ListTile(
-          leading: Icon(contatto.tipo == 'cliente' ? Icons.person : Icons.store),
-          title: Text(contatto.ragioneSociale ?? 'Senza nome'),
-          subtitle: Text(contatto.telefono01 ?? 'Nessun telefono'),
-          trailing: Chip(
-            label: Text('${clientiProvider.conteggiReali[contatto.idCliente] ?? contatto.conteggioPreventivi} prev.'),
-          ),
-          onTap: () {
-            if (widget.isSelectionMode) {
-              Navigator.of(context).pop(contatto);
-            } else {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => DettaglioContattoScreen(contatto: contatto),
-                ),
-              );
-            }
+        final tuttiIContatti = snapshot.data!.docs.map((doc) {
+          return Cliente.fromFirestore(doc);
+        }).toList();
+
+        final query = _searchController.text.toLowerCase();
+        final contattiFiltrati = query.isEmpty
+            ? tuttiIContatti
+            : tuttiIContatti.where((contatto) {
+                // Utilizziamo i nomi corretti delle proprietà della classe Cliente
+                final ragioneSociale = (contatto.ragioneSociale ?? '').toLowerCase();
+                final telefono1 = (contatto.telefono01 ?? '').toLowerCase();
+                final telefono2 = (contatto.telefono02 ?? '').toLowerCase();
+                
+                return ragioneSociale.contains(query) ||
+                       telefono1.contains(query) ||
+                       telefono2.contains(query);
+              }).toList();
+
+        if (contattiFiltrati.isEmpty) {
+          return const Center(child: Text('Nessun contatto trovato.'));
+        }
+
+        return ListView.builder(
+          itemCount: contattiFiltrati.length,
+          itemBuilder: (context, index) {
+            final contatto = contattiFiltrati[index];
+            return ListTile(
+              key: ValueKey(contatto.idCliente),
+              leading: const Icon(Icons.person),
+              title: Text(contatto.ragioneSociale ?? 'Senza nome'),
+              subtitle: Text(contatto.telefono01 ?? 'Nessun telefono'),
+              trailing: Chip(
+                label: Text('${contatto.conteggioPreventivi} prev.'),
+              ),
+              onTap: () {
+                if (widget.isSelectionMode) {
+                  Navigator.of(context).pop(contatto);
+                } else {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => DettaglioContattoScreen(contatto: contatto),
+                    ),
+                  );
+                }
+              },
+            );
           },
         );
       },

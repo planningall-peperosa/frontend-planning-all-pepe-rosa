@@ -1,4 +1,6 @@
+// lib/models/menu_template.dart
 import 'dart:convert';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 class MenuTemplate {
   final String idMenu;
@@ -46,15 +48,25 @@ class MenuTemplate {
       return out;
     }
 
-    final compAny = json['composizione_default'] ?? json['composizione_default_json'] ?? {};
+    // --- MODIFICA CORRETTIVA: Leggiamo dal nuovo nome campo 'composizione' ---
+    final compAny = json['composizione'] ?? json['composizione_default'] ?? json['composizione_default_json'] ?? {};
 
     return MenuTemplate(
       idMenu: json['id_menu']?.toString() ?? '',
       nomeMenu: nome,
       tipologia: json['tipologia']?.toString() ?? '',
-      prezzo: parsePrezzo(json['prezzo']),
+      // --- MODIFICA CORRETTIVA: Leggiamo dal nuovo nome campo 'prezzo_predefinito' ---
+      prezzo: parsePrezzo(json['prezzo_predefinito'] ?? json['prezzo']),
       composizioneDefault: parseComp(compAny),
     );
+  }
+
+  // --- NUOVA AGGIUNTA: TRADUTTORE DA FIRESTORE ---
+  factory MenuTemplate.fromFirestore(DocumentSnapshot doc) {
+    final data = doc.data() as Map<String, dynamic>;
+    // L'id del documento diventa il nostro idMenu per coerenza
+    data['id_menu'] = doc.id; 
+    return MenuTemplate.fromJson(data);
   }
 
   MenuTemplate copyWith({
@@ -77,7 +89,7 @@ class MenuTemplate {
         'id_menu': idMenu,
         'nome_menu': nomeMenu,
         'tipologia': tipologia,
-        'prezzo': prezzo,
-        'composizione_default': composizioneDefault,
+        'prezzo_predefinito': prezzo, // Scriviamo con il nuovo nome
+        'composizione': composizioneDefault, // Scriviamo con il nuovo nome
       };
 }

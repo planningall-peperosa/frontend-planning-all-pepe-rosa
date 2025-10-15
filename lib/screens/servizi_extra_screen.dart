@@ -1,13 +1,17 @@
 // lib/screens/servizi_extra_screen.dart
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import 'package:provider/provider.dart';
+import 'package:provider/provider.dart'; // <-- MODIFICA CORRETTIVA QUI
+import 'package:cloud_firestore/cloud_firestore.dart';
+
 import '../models/servizio_selezionato.dart';
-import '../providers/servizi_provider.dart';
 import '../providers/preventivo_builder_provider.dart';
 import '../models/fornitore_servizio.dart';
 import 'dati_cliente_screen.dart';
 import '../widgets/wizard_stepper.dart';
+
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'archivio_preventivi_screen.dart';
 
 class ServiziExtraScreen extends StatefulWidget {
   const ServiziExtraScreen({super.key});
@@ -25,16 +29,21 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
 
   bool _haTentatoDiAndareAvanti = false;
 
+  bool _isProcessing = false;
+  String? _busyAction;
+  
+  late Future<List<String>> _ruoliFuture;
+
   @override
   void initState() {
     super.initState();
+    _ruoliFuture = _caricaTuttiIRuoliDaFirestore();
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      final serviziProvider = Provider.of<ServiziProvider>(context, listen: false);
       final preventivoBuilder = Provider.of<PreventivoBuilderProvider>(context, listen: false);
 
       _nomeEventoController.text = preventivoBuilder.nomeEvento ?? '';
-
-      // MOSTRA VUOTO SE 0 O NULL, MA SALVA 0 SE LASCIATO VUOTO
+      
       final osp = preventivoBuilder.numeroOspiti ?? 0;
       _ospitiController.text = (osp > 0) ? osp.toString() : '';
 
@@ -46,14 +55,28 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
         preventivoBuilder.setNomeEvento(_nomeEventoController.text);
       });
 
-      // Se vuoto o non numerico -> 0
       _ospitiController.addListener(() {
         final n = int.tryParse(_ospitiController.text) ?? 0;
         preventivoBuilder.setNumeroOspiti(n);
       });
-
-      serviziProvider.caricaTuttiIRuoli();
     });
+  }
+  
+  Future<List<String>> _caricaTuttiIRuoliDaFirestore() async {
+    try {
+      final snapshot = await FirebaseFirestore.instance.collection('fornitori').get();
+      final ruoli = snapshot.docs
+          .map((doc) => doc.data()['ruolo'] as String?)
+          .whereType<String>()
+          .toSet()
+          .toList();
+      ruoli.sort();
+      return ruoli;
+    } catch (e) {
+      // ignore: avoid_print
+      print("Errore caricamento ruoli: $e");
+      return [];
+    }
   }
 
 
@@ -93,12 +116,10 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
   Future<void> _selezionaDataEvento() async {
     final builder = Provider.of<PreventivoBuilderProvider>(context, listen: false);
 
-    // Limiti
     final now = DateTime.now();
-    final first = DateTime(now.year, now.month, now.day); // oggi senza orario
+    final first = DateTime(now.year, now.month, now.day);
     final last  = DateTime(2100, 12, 31);
 
-    // initialDate sicura: se esiste ma è fuori range, la clampo
     DateTime initial;
     final curr = builder.dataEvento;
     if (curr == null) {
@@ -121,7 +142,7 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
 
     if (picked != null) {
       builder.setDataEvento(picked);
-      if (mounted) setState(() {}); // aggiorna il testo nel campo
+      if (mounted) setState(() {});
     }
   }
 
@@ -135,35 +156,107 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
   }
 
   Future<FornitoreServizio?> _mostraDialogSelezioneFornitore(String ruolo) async {
-    final provider = Provider.of<ServiziProvider>(context, listen: false);
-    final fornitori = await provider.caricaFornitoriPerRuolo(ruolo);
-    if (!mounted) return null;
+    final fornitoriFuture = FirebaseFirestore.instance
+        .collection('fornitori')
+        .where('ruolo', isEqualTo: ruolo)
+        .get()
+        .then((snapshot) => snapshot.docs.map((doc) => FornitoreServizio.fromFirestore(doc)).toList());
 
     return showDialog<FornitoreServizio>(
       context: context,
-      builder: (context) => SimpleDialog(
-        title: Text('Seleziona ${ruolo.replaceAll("_", " ")}'),
-        children: fornitori.isEmpty
-            ? [const SimpleDialogOption(child: Text("Nessun fornitore disponibile."))]
-            : fornitori
-                .map(
-                  (fornitore) => SimpleDialogOption(
-                    onPressed: () => Navigator.pop(context, fornitore),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(fornitore.ragioneSociale),
-                        if (fornitore.prezzo != null && fornitore.prezzo! > 0)
-                          Text('€${fornitore.prezzo!.toStringAsFixed(2)}',
-                              style: const TextStyle(color: Colors.grey)),
-                      ],
-                    ),
-                  ),
-                )
-                .toList(),
+      builder: (context) => FutureBuilder<List<FornitoreServizio>>(
+        future: fornitoriFuture,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const SimpleDialog(
+              title: Text('Caricamento fornitori...'),
+              children: [Center(child: CircularProgressIndicator())],
+            );
+          }
+          if (snapshot.hasError) {
+            return SimpleDialog(
+              title: const Text('Errore'),
+              children: [SimpleDialogOption(child: Text('Impossibile caricare i fornitori: ${snapshot.error}'))],
+            );
+          }
+
+          final fornitori = snapshot.data ?? [];
+          
+          return SimpleDialog(
+            title: Text('Seleziona ${ruolo.replaceAll("_", " ")}'),
+            children: fornitori.isEmpty
+                ? [const SimpleDialogOption(child: Text("Nessun fornitore disponibile."))]
+                : fornitori
+                    .map(
+                      (fornitore) => SimpleDialogOption(
+                        onPressed: () => Navigator.pop(context, fornitore),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(fornitore.ragioneSociale),
+                            if (fornitore.prezzo != null && fornitore.prezzo! > 0)
+                              Text('€${fornitore.prezzo!.toStringAsFixed(2)}',
+                                  style: const TextStyle(color: Colors.grey)),
+                          ],
+                        ),
+                      ),
+                    )
+                    .toList(),
+          );
+        },
       ),
     );
   }
+
+
+  // --- NUOVA FUNZIONE DA AGGIUNGERE ---
+  Future<void> _salvaSuFirebase() async {
+    // Aggiorna il provider con gli ultimi dati inseriti nei campi di testo di questa schermata
+    final builder = Provider.of<PreventivoBuilderProvider>(context, listen: false);
+    builder.setNomeEvento(_nomeEventoController.text);
+    final ospiti = int.tryParse(_ospitiController.text) ?? 0;
+    builder.setNumeroOspiti(ospiti);
+    final sconto = double.tryParse(_scontoController.text.replaceAll(',', '.')) ?? 0.0;
+    builder.setSconto(sconto);
+
+    setState(() {
+       _isProcessing = true;
+       _busyAction = 'save';
+    });
+    
+    final scaffoldMessenger = ScaffoldMessenger.of(context);
+    
+    try {
+      final dataToSave = builder.toFirestoreMap();
+      final preventivoId = builder.preventivoId;
+
+      if (preventivoId != null && preventivoId.isNotEmpty) {
+        // AGGIORNA
+        await FirebaseFirestore.instance.collection('preventivi').doc(preventivoId).update(dataToSave);
+      } else {
+        // CREA
+        final newDoc = await FirebaseFirestore.instance.collection('preventivi').add(dataToSave);
+        builder.setPreventivoId(newDoc.id);
+      }
+      
+      scaffoldMessenger.showSnackBar(
+        const SnackBar(content: Text('Preventivo salvato!'), backgroundColor: Colors.green),
+      );
+
+    } catch (e) {
+      scaffoldMessenger.showSnackBar(
+        SnackBar(content: Text('Errore durante il salvataggio: $e'), backgroundColor: Colors.red),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isProcessing = false;
+          _busyAction = null;
+        });
+      }
+    }
+  }
+
 
   @override
   Widget build(BuildContext context) {
@@ -173,38 +266,38 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
           appBar: AppBar(
             title: const Text('Dati Evento e Servizi'),
             actions: [
-              IconButton(
-                tooltip: 'Esci senza salvare (Home)',
-                icon: const Icon(Icons.home_outlined),
-                onPressed: () async {
-                  final conferma = await showDialog<bool>(
-                    context: context,
-                    builder: (ctx) => AlertDialog(
-                      title: const Text('Uscire senza salvare?'),
-                      content: const Text('Le modifiche non salvate andranno perse.'),
-                      actions: [
-                        TextButton(
-                          onPressed: () => Navigator.of(ctx).pop(false),
-                          child: const Text('Annulla'),
-                        ),
-                        TextButton(
-                          onPressed: () => Navigator.of(ctx).pop(true),
-                          child: const Text('Esci'),
-                        ),
-                      ],
-                    ),
-                  );
-                  if (conferma == true && mounted) {
-                    // Torna alla prima route (Home)
-                    Navigator.of(context).popUntil((route) => route.isFirst);
+              // --- NUOVI PULSANTI ---
+              if (!_isProcessing)
+                IconButton(
+                  tooltip: 'Salva Stato Attuale',
+                  icon: const Icon(Icons.save),
+                  onPressed: _salvaSuFirebase,
+                )
+              else
+                const Padding(
+                  padding: EdgeInsets.all(16.0),
+                  child: SizedBox(width: 24, height: 24, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2)),
+                ),
 
-                    // In alternativa, se usi route nominata per la Home:
-                    // Navigator.of(context).pushNamedAndRemoveUntil('/home', (route) => false);
-                  }
+              IconButton(
+                tooltip: 'Torna ai Preventivi',
+                icon: const Icon(Icons.inventory_2_outlined),
+                onPressed: () {
+                  Navigator.of(context).popUntil((route) => route.isFirst);
+                  Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ArchivioPreventiviScreen()));
+                },
+              ),
+              
+              IconButton(
+                tooltip: 'Torna alla Home',
+                icon: const Icon(Icons.home_outlined),
+                onPressed: () {
+                  Navigator.of(context).popUntil((route) => route.isFirst);
                 },
               ),
             ],
           ),
+          // --- MODIFICA CORRETTIVA: Aggiunto 'body' e 'Column' ---
           body: Column(
             children: [
               WizardStepper(
@@ -218,14 +311,24 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
               Expanded(
                 child: Form(
                   key: _formKey,
-                  child: Consumer<ServiziProvider>(
-                    builder: (context, serviziProvider, child) {
+                  child: FutureBuilder<List<String>>(
+                    future: _ruoliFuture,
+                    builder: (context, snapshot) {
+                       if (snapshot.connectionState == ConnectionState.waiting) {
+                         return const Center(child: CircularProgressIndicator());
+                       }
+                       if (snapshot.hasError) {
+                         return Center(child: Text("Errore nel caricamento dei ruoli: ${snapshot.error}"));
+                       }
+
+                       final ruoliDisponibili = snapshot.data ?? [];
+
                       return ListView(
                         padding: const EdgeInsets.all(16.0),
                         children: [
                           _buildDatiEventoSection(preventivoBuilder),
                           const SizedBox(height: 32),
-                          _buildServiziExtraSection(serviziProvider, preventivoBuilder),
+                          _buildServiziExtraSection(ruoliDisponibili, preventivoBuilder),
                           const SizedBox(height: 32),
                           _buildRiepilogoCosti(preventivoBuilder),
                         ],
@@ -261,7 +364,7 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
           ElevatedButton.icon(
-            icon: const Icon(Icons.arrow_back_ios), // se preferisci lascia pure _new
+            icon: const Icon(Icons.arrow_back_ios),
             label: const Text(
               "Menu",
               style: TextStyle(fontWeight: FontWeight.w700),
@@ -270,10 +373,10 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
               Navigator.of(context).pop();
             },
             style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.white,      // bianco pieno
-              foregroundColor: Colors.black87,    // testo/icone scure
+              backgroundColor: Colors.white,
+              foregroundColor: Colors.black87,
               textStyle: const TextStyle(fontWeight: FontWeight.w700),
-              elevation: 0,                        // look “sottile”
+              elevation: 0,
             ),
           ),
 
@@ -352,8 +455,6 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
           ],
         ),
         const SizedBox(height: 16),
-
-        // --- NUOVO BLOCCO: MENU BAMBINI ---
         Text("Menu Bambini", style: Theme.of(context).textTheme.titleMedium),
         const SizedBox(height: 8),
         Row(
@@ -388,13 +489,13 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
         ),
         const SizedBox(height: 8),
         TextFormField(
-          initialValue: builder.noteMenuBambini,
+          initialValue: builder.menuBambini,
           decoration: const InputDecoration(
             labelText: 'Piatti menu bambini',
             hintText: 'Es. Pasta al pomodoro, cotoletta e patatine…',
           ),
           maxLines: 2,
-          onChanged: builder.setNoteMenuBambini,
+          onChanged: builder.setMenuBambini,
         ),
         const SizedBox(height: 8),
         Align(
@@ -407,11 +508,8 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
   }
 
   Widget _buildServiziExtraSection(
-      ServiziProvider provider, PreventivoBuilderProvider builder) {
-    final allRuoli = provider.ruoliDisponibili;
-
-    // Ordine esplicito: "spettacolo pirotecnico" dopo "servizio fotografico" e
-    // prima di "servizio generico" (con pasticceria e allestimento davanti).
+      List<String> allRuoli, PreventivoBuilderProvider builder) {
+    
     final explicitOrder = <String>[
       'pasticceria',
       'allestimento',
@@ -421,13 +519,10 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
     ];
 
     final ruoliFornitore = <String>[
-      // prima quelli nell'ordine voluto, se presenti
       ...explicitOrder.where((r) => allRuoli.contains(r)),
-      // poi tutti gli altri ruoli rimasti, nell'ordine originale
       ...allRuoli.where((r) => !explicitOrder.contains(r)),
     ];
 
-    // NB: spettacolo pirotecnico gestito come "ruolo con fornitore", quindi NON qui
     final serviziConNota = ['buffet di dolci', 'open bar'];
     final serviziSemplici = ['cream tart', 'confettata'];
 
@@ -625,8 +720,7 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
         Text("Riepilogo Costi", style: Theme.of(context).textTheme.titleLarge),
         const Divider(height: 24),
         ListTile(
-          title:
-              Text("Menu Adulti ($adulti × € ${b.prezzoMenuPersona.toStringAsFixed(2)})", style: textStyle),
+          title: Text("Menu Adulti ($adulti × € ${b.prezzoMenuAdulto.toStringAsFixed(2)})", style: textStyle),
           trailing: Text("€ ${b.costoMenuAdulti.toStringAsFixed(2)}", style: textStyle),
         ),
         ListTile(

@@ -30,6 +30,9 @@ import 'cerca_cliente_screen.dart';
 import '../widgets/wizard_stepper.dart';
 import '../widgets/firma_dialog.dart';
 
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'archivio_preventivi_screen.dart';
+
 enum _SignatureLayout { vertical, horizontal }
 
 // =========================
@@ -293,53 +296,148 @@ class _DatiClienteScreenState extends State<DatiClienteScreen> {
     return isValid;
   }
 
-  // ====================== SALVA ======================
-  Future<void> _salva() async {
-    if (!_formKey.currentState!.validate()) return;
-    final total = Stopwatch()..start();
-    _logUi('SALVA start');
-    setState(() => _isProcessing = true);
-    final prep = Stopwatch()..start();
-    _aggiornaBuilderDaiController();
-    prep.stop();
-    _logUi('prep builder ${prep.elapsedMilliseconds}ms');
 
-    final prov = Provider.of<PreventivoBuilderProvider>(context, listen: false);
-    final preventiviProvider = Provider.of<PreventiviProvider>(context, listen: false);
-
-    try {
-      if (!_hasLocalChangesDyn(prov)) {
-        _logUi('no changes, abort');
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Nessuna modifica da salvare')),
-        );
-        return;
-      }
-
-      final swSave = Stopwatch()..start();
-      final summary = await prov.salvaPreventivo(preventiviProvider: preventiviProvider);
-      swSave.stop();
-      _logUi('prov.salvaPreventivo ${swSave.elapsedMilliseconds}ms (ok=${summary != null})');
-      if (summary == null) throw Exception(prov.erroreSalvataggio ?? 'Salvataggio fallito');
-
-      _clearLocalChangesDyn(prov);
-
-      if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('Preventivo salvato')));
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Errore: $e')));
-      _logUi('SALVA error: $e');
-    } finally {
-      if (mounted) setState(() => _isProcessing = false);
-      total.stop();
-      _logUi('SALVA end total=${total.elapsedMilliseconds}ms');
+Future<bool> _salvaSuFirebase({bool popOnSuccess = false}) async {
+    if (!_formKey.currentState!.validate()) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Compila i campi obbligatori prima di salvare.'), backgroundColor: Colors.red),
+      );
+      return false;
     }
+    
+    setState(() {
+       _isProcessing = true;
+       _busyAction = 'save';
+    });
+    
+    _aggiornaBuilderDaiController();
+    final scaffoldMessenger = ScaffoldMessenger.of(context);
+    bool success = false;
+    
+    try {
+      final builder = Provider.of<PreventivoBuilderProvider>(context, listen: false);
+      final dataToSave = builder.toFirestoreMap();
+      final preventivoId = builder.preventivoId;
+
+      if (preventivoId != null && preventivoId.isNotEmpty) {
+        await FirebaseFirestore.instance.collection('preventivi').doc(preventivoId).update(dataToSave);
+      } else {
+        final newDoc = await FirebaseFirestore.instance.collection('preventivi').add(dataToSave);
+        builder.setPreventivoId(newDoc.id); 
+      }
+      
+      _clearLocalChangesDyn(builder);
+      
+      scaffoldMessenger.showSnackBar(
+        const SnackBar(content: Text('Preventivo salvato con successo!'), backgroundColor: Colors.green),
+      );
+
+      if (popOnSuccess && mounted) {
+        Navigator.of(context).popUntil((route) => route.isFirst);
+      }
+      success = true;
+
+    } catch (e) {
+      scaffoldMessenger.showSnackBar(
+        SnackBar(content: Text('Errore durante il salvataggio: $e'), backgroundColor: Colors.red),
+      );
+      success = false;
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isProcessing = false;
+          _busyAction = null;
+        });
+      }
+    }
+    return success;
   }
 
-  // ====================== GENERA PDF ======================
+
+
+
+
+  Widget _buildNavigationControls() {
+    Widget _spinner() => const SizedBox(
+          width: 18,
+          height: 18,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        );
+
+    return Container(
+      padding: const EdgeInsets.all(16.0),
+      decoration: BoxDecoration(
+        color: Theme.of(context).scaffoldBackgroundColor,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.1),
+            spreadRadius: 0,
+            blurRadius: 4,
+            offset: const Offset(0, -2),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: OutlinedButton(
+              style: OutlinedButton.styleFrom(
+                textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 24),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                side: BorderSide.none,
+              ),
+              onPressed: _isProcessing
+                  ? null
+                  : () {
+                      _aggiornaBuilderDaiController();
+                      Navigator.of(context).pop();
+                    },
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: const [
+                  Icon(Icons.arrow_back_ios_new),
+                  SizedBox(width: 8),
+                  Text('Servizi extra'),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: ElevatedButton.icon(
+              icon: (_busyAction == 'save') ? _spinner() : const Icon(Icons.save),
+              label: const Text('Salva'),
+              onPressed: _isProcessing ? null : () => _salvaSuFirebase(popOnSuccess: false),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: ElevatedButton.icon(
+              icon: (_busyAction == 'pdf') ? _spinner() : const Icon(Icons.picture_as_pdf),
+              label: const Text('Genera PDF'),
+              onPressed: _isProcessing ? null : _salvaEGeneraPdf,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+
+
+  // La vecchia funzione _salva ora è obsoleta. Puoi cancellarla o lasciarla vuota.
+  Future<void> _salva() async {
+    _logUi('CHIAMATA A FUNZIONE DEPRECATA _salva(). Usare _salvaSuFirebase().');
+  }
+
+
+
+  // =================================================
+  // --- FUNZIONE PDF AGGIORNATA ---
+  // =================================================
   Future<void> _salvaEGeneraPdf() async {
     if (!_validateFormOrNotify()) return;
 
@@ -349,39 +447,46 @@ class _DatiClienteScreenState extends State<DatiClienteScreen> {
       _isProcessing = true;
       _busyAction = 'pdf';
     });
-    final prep = Stopwatch()..start();
+    
     _aggiornaBuilderDaiController();
-    prep.stop();
-    _logUi('prep builder ${prep.elapsedMilliseconds}ms');
 
     final prov = Provider.of<PreventivoBuilderProvider>(context, listen: false);
-    final preventiviProvider = Provider.of<PreventiviProvider>(context, listen: false);
+    // Manteniamo il vecchio service solo per la generazione del PDF
     final service = PreventiviService();
 
     try {
-      final mustSave = _hasLocalChangesDyn(prov);
-      if (mustSave) {
-        final swSave = Stopwatch()..start();
-        final summary = await prov.salvaPreventivo(preventiviProvider: preventiviProvider);
-        swSave.stop();
-        _logUi('prov.salvaPreventivo (pre-PDF) ${swSave.elapsedMilliseconds}ms (ok=${summary != null})');
-        if (summary == null) throw Exception(prov.erroreSalvataggio ?? 'Salvataggio fallito');
-        _clearLocalChangesDyn(prov);
+      // --- MODIFICA APPLICATA QUI ---
+      // Passo 1: Salva sempre prima su Firebase se ci sono modifiche, usando la nostra nuova funzione.
+      if (_hasLocalChangesDyn(prov)) {
+        // Chiamiamo la nuova funzione di salvataggio e attendiamo il risultato.
+        // popOnSuccess è false perché non vogliamo chiudere la schermata.
+        final salvataggioOk = await _salvaSuFirebase(popOnSuccess: false);
+        
+        // Se il salvataggio su Firebase fallisce, interrompiamo l'intera operazione.
+        if (!salvataggioOk) {
+          throw Exception('Salvataggio su Firebase fallito prima della generazione del PDF.');
+        }
       }
+      
+      // A questo punto, siamo sicuri che i dati sono salvati e aggiornati su Firebase.
 
+      // Passo 2: Crea il payload nel vecchio formato, ancora richiesto dal servizio PDF.
+      // Questa parte è un "ponte" temporaneo verso il vecchio backend.
       final payloadCompleto = prov.creaPayloadSalvataggio();
-      if (payloadCompleto == null) throw Exception('Dati incompleti per il salvataggio');
+      if (payloadCompleto == null) throw Exception('Dati incompleti per la generazione del PDF');
 
       final body = {
-        'preventivo_id': prov.preventivoId,
+        'preventivo_id': prov.preventivoId, // L'ID è ora disponibile anche per i nuovi preventivi dopo il primo salvataggio.
         'payload': payloadCompleto['payload'],
       };
 
+      // Passo 3: Chiama il vecchio servizio Python per generare il PDF.
       final swPdf = Stopwatch()..start();
       final bytes = await service.salvaEGeneraPdf(body);
       swPdf.stop();
       _logUi('service.salvaEGeneraPdf ${swPdf.elapsedMilliseconds}ms (bytes=${bytes.length})');
 
+      // Passo 4: Gestisci il file PDF generato (questa logica rimane invariata).
       if (!kIsWeb && (Platform.isMacOS || Platform.isWindows || Platform.isLinux)) {
         await _savePdfDesktop(bytes, prov);
       } else if (!kIsWeb && Platform.isAndroid) {
@@ -404,7 +509,7 @@ class _DatiClienteScreenState extends State<DatiClienteScreen> {
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(mustSave ? 'Preventivo salvato e PDF generato' : 'PDF generato')),
+        const SnackBar(content: Text('PDF generato con successo')),
       );
     } catch (e) {
       if (!mounted) return;
@@ -1036,74 +1141,6 @@ class _DatiClienteScreenState extends State<DatiClienteScreen> {
     return frame.image;
   }
 
-  Widget _buildNavigationControls() {
-    Widget _spinner() => const SizedBox(
-          width: 18,
-          height: 18,
-          child: CircularProgressIndicator(strokeWidth: 2),
-        );
-
-    return Container(
-      padding: const EdgeInsets.all(16.0),
-      decoration: BoxDecoration(
-        color: Theme.of(context).scaffoldBackgroundColor,
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.1),
-            spreadRadius: 0,
-            blurRadius: 4,
-            offset: const Offset(0, -2),
-          ),
-        ],
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: OutlinedButton(
-              style: OutlinedButton.styleFrom(
-                textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 24),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                side: BorderSide.none, // <-- niente bordo
-              ),
-              onPressed: _isProcessing
-                  ? null
-                  : () {
-                      _aggiornaBuilderDaiController();
-                      Navigator.of(context).pop();
-                    },
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: const [
-                  Icon(Icons.arrow_back_ios_new),
-                  SizedBox(width: 8),
-                  Text('Servizi extra'),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: ElevatedButton.icon(
-              icon: (_busyAction == 'save') ? _spinner() : const Icon(Icons.save),
-              label: const Text('Salva'),
-              onPressed: _isProcessing ? null : _salva,
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: ElevatedButton.icon(
-              icon: (_busyAction == 'pdf') ? _spinner() : const Icon(Icons.picture_as_pdf),
-              label: const Text('Genera PDF'),
-              onPressed: _isProcessing ? null : _salvaEGeneraPdf,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
 
   Widget _buildCardCercaCliente() {
     return ListTile(
@@ -1115,203 +1152,196 @@ class _DatiClienteScreenState extends State<DatiClienteScreen> {
   }
 
   @override
-  Widget build(BuildContext context) {
-    final prov = Provider.of<PreventivoBuilderProvider>(context, listen: true);
+    Widget build(BuildContext context) {
+      final prov = Provider.of<PreventivoBuilderProvider>(context, listen: true);
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Completa Preventivo'),
-        actions: [
-          // SOSTITUZIONE: Home con conferma “Esci senza salvare”
-          IconButton(
-            tooltip: 'Esci senza salvare (Home)',
-            icon: const Icon(Icons.home_outlined),
-            onPressed: () async {
-              final conferma = await showDialog<bool>(
-                context: context,
-                builder: (ctx) => AlertDialog(
-                  title: const Text('Uscire senza salvare?'),
-                  content: const Text('Le modifiche non salvate andranno perse.'),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.of(ctx).pop(false),
-                      child: const Text('Annulla'),
-                    ),
-                    TextButton(
-                      onPressed: () => Navigator.of(ctx).pop(true),
-                      child: const Text('Esci'),
-                    ),
-                  ],
-                ),
-              );
-              if (conferma == true && mounted) {
-                Provider.of<PreventivoBuilderProvider>(context, listen: false).reset();
+      return Scaffold(
+        appBar: AppBar(
+          title: const Text('Completa Preventivo'),
+          // --- MODIFICHE APPLICATE QUI ---
+          actions: [
+            IconButton(
+              tooltip: 'Torna ai Preventivi',
+              icon: const Icon(Icons.inventory_2_outlined),
+              onPressed: () {
+                // Chiude tutte le schermate del wizard e torna alla home,
+                // poi apre l'archivio preventivi.
                 Navigator.of(context).popUntil((route) => route.isFirst);
-              }
-            },
-          ),
-        ],
-      ),
-      body: Column(
-        children: [
-          WizardStepper(
-            currentStep: 2,
-            steps: const ['Menu', 'Servizi', 'Cliente'],
-            onStepTapped: (index) {
-              _aggiornaBuilderDaiController();
-              if (index == 1) {
-                Navigator.of(context).pop();
-              } else if (index == 0) {
-                Navigator.of(context).pop();
-                Navigator.of(context).pop();
-              }
-            },
-          ),
-          const Divider(height: 1),
-          Expanded(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(16.0),
-              child: Form(
-                key: _formKey,
-                autovalidateMode:
-                    _autoValidate ? AutovalidateMode.always : AutovalidateMode.disabled,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    // Dati Cliente
-                    Card(
-                      child: Padding(
-                        padding: const EdgeInsets.all(16.0),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            Text('Dati Cliente', style: Theme.of(context).textTheme.titleLarge),
-                            const SizedBox(height: 16),
-                            _buildCardCercaCliente(),
-                            const SizedBox(height: 16),
-                            TextFormField(
-                              focusNode: _nomeClienteFocusNode,
-                              controller: _nomeClienteController,
-                              decoration: const InputDecoration(
-                                labelText: 'Nome Cliente / Ragione Sociale',
-                                border: OutlineInputBorder(),
+                Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ArchivioPreventiviScreen()));
+              },
+            ),
+            IconButton(
+              tooltip: 'Torna alla Home',
+              icon: const Icon(Icons.home_outlined),
+              onPressed: () {
+                // Chiude tutte le schermate del wizard e torna alla home.
+                Navigator.of(context).popUntil((route) => route.isFirst);
+              },
+            ),
+          ],
+        ),
+        body: Column(
+          children: [
+            WizardStepper(
+              currentStep: 2,
+              steps: const ['Menu', 'Servizi', 'Cliente'],
+              onStepTapped: (index) {
+                _aggiornaBuilderDaiController();
+                if (index == 1) {
+                  Navigator.of(context).pop();
+                } else if (index == 0) {
+                  Navigator.of(context).pop();
+                  Navigator.of(context).pop();
+                }
+              },
+            ),
+            const Divider(height: 1),
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(16.0),
+                child: Form(
+                  key: _formKey,
+                  autovalidateMode:
+                      _autoValidate ? AutovalidateMode.always : AutovalidateMode.disabled,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      // Dati Cliente
+                      Card(
+                        child: Padding(
+                          padding: const EdgeInsets.all(16.0),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Text('Dati Cliente', style: Theme.of(context).textTheme.titleLarge),
+                              const SizedBox(height: 16),
+                              _buildCardCercaCliente(),
+                              const SizedBox(height: 16),
+                              TextFormField(
+                                focusNode: _nomeClienteFocusNode,
+                                controller: _nomeClienteController,
+                                decoration: const InputDecoration(
+                                  labelText: 'Nome Cliente / Ragione Sociale',
+                                  border: OutlineInputBorder(),
+                                ),
+                                validator: (value) {
+                                  if (value == null || value.trim().isEmpty) {
+                                    return 'Campo obbligatorio';
+                                  }
+                                  return null;
+                                },
                               ),
-                              validator: (value) {
-                                if (value == null || value.trim().isEmpty) {
-                                  return 'Campo obbligatorio';
-                                }
-                                return null;
-                              },
-                            ),
-                            const SizedBox(height: 12),
-                            TextFormField(
-                              controller: _telefonoController,
-                              decoration: const InputDecoration(
-                                labelText: 'Telefono Principale',
-                                border: OutlineInputBorder(),
+                              const SizedBox(height: 12),
+                              TextFormField(
+                                controller: _telefonoController,
+                                decoration: const InputDecoration(
+                                  labelText: 'Telefono Principale',
+                                  border: OutlineInputBorder(),
+                                ),
+                                keyboardType: TextInputType.phone,
+                                onChanged: _onTelefonoChanged,
                               ),
-                              keyboardType: TextInputType.phone,
-                              onChanged: _onTelefonoChanged,
-                            ),
-                            const SizedBox(height: 12),
-                            TextFormField(
-                              controller: _emailController,
-                              decoration: const InputDecoration(
-                                labelText: 'Email (Opzionale)',
-                                border: OutlineInputBorder(),
+                              const SizedBox(height: 12),
+                              TextFormField(
+                                controller: _emailController,
+                                decoration: const InputDecoration(
+                                  labelText: 'Email (Opzionale)',
+                                  border: OutlineInputBorder(),
+                                ),
+                                keyboardType: TextInputType.emailAddress,
                               ),
-                              keyboardType: TextInputType.emailAddress,
-                            ),
-                            const SizedBox(height: 16),
-                            ElevatedButton.icon(
-                              icon: (_busyAction == 'create')
-                                  ? const SizedBox(
-                                      width: 18,
-                                      height: 18,
-                                      child: CircularProgressIndicator(strokeWidth: 2),
-                                    )
-                                  : const Icon(Icons.person_add_alt_1),
-                              label: const Text('Crea e Seleziona Nuovo Cliente'),
-                              onPressed:
-                                  (_isNuovoCliente && !_isProcessing) ? () => _creaNuovoCliente() : null,
-                              style: ElevatedButton.styleFrom(
-                                foregroundColor: Colors.white,
-                                backgroundColor: Colors.green.shade600,
-                                disabledBackgroundColor: Colors.grey.shade400,
+                              const SizedBox(height: 16),
+                              ElevatedButton.icon(
+                                icon: (_busyAction == 'create')
+                                    ? const SizedBox(
+                                        width: 18,
+                                        height: 18,
+                                        child: CircularProgressIndicator(strokeWidth: 2),
+                                      )
+                                    : const Icon(Icons.person_add_alt_1),
+                                label: const Text('Crea e Seleziona Nuovo Cliente'),
+                                onPressed:
+                                    (_isNuovoCliente && !_isProcessing) ? () => _creaNuovoCliente() : null,
+                                style: ElevatedButton.styleFrom(
+                                  foregroundColor: Colors.white,
+                                  backgroundColor: Colors.green.shade600,
+                                  disabledBackgroundColor: Colors.grey.shade400,
+                                ),
                               ),
-                            ),
-                            const SizedBox(height: 24),
-                          ],
+                              const SizedBox(height: 24),
+                            ],
+                          ),
                         ),
                       ),
-                    ),
-                    const SizedBox(height: 24),
+                      const SizedBox(height: 24),
 
-                    const SizedBox(height: 24),
+                      const SizedBox(height: 24),
 
-                    Card(
-                      child: Padding(
-                        padding: const EdgeInsets.all(16.0),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            Text('Acconto', style: Theme.of(context).textTheme.titleLarge),
-                            const SizedBox(height: 12),
-                            TextFormField(
-                              controller: _accontoController,
-                              decoration: const InputDecoration(
-                                labelText: 'Acconto',
-                                prefixText: '€ ',
-                                border: OutlineInputBorder(),
+                      Card(
+                        child: Padding(
+                          padding: const EdgeInsets.all(16.0),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Text('Acconto', style: Theme.of(context).textTheme.titleLarge),
+                              const SizedBox(height: 12),
+                              TextFormField(
+                                controller: _accontoController,
+                                decoration: const InputDecoration(
+                                  labelText: 'Acconto',
+                                  prefixText: '€ ',
+                                  border: OutlineInputBorder(),
+                                ),
+                                keyboardType:
+                                    const TextInputType.numberWithOptions(decimal: true),
                               ),
-                              keyboardType:
-                                  const TextInputType.numberWithOptions(decimal: true),
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
                       ),
-                    ),
 
-                    const SizedBox(height: 24),
+                      const SizedBox(height: 24),
 
-                    // Card unica per acquisire firma & confermare
-                    _buildConfermaCard(prov),
-                    const SizedBox(height: 24),
+                      // Card unica per acquisire firma & confermare
+                      _buildConfermaCard(prov),
+                      const SizedBox(height: 24),
 
-                    // Riepilogo costi
-                    Card(
-                      child: Padding(
-                        padding: const EdgeInsets.all(16.0),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text('Riepilogo costi', style: Theme.of(context).textTheme.titleLarge),
-                            const SizedBox(height: 8),
-                            Text('Menu Adulti: € ${prov.costoMenuAdulti.toStringAsFixed(2)}'),
-                            Text('Menu Bambini: € ${prov.costoMenuBambini.toStringAsFixed(2)}'),
-                            Text('Servizi Extra: € ${prov.costoServizi.toStringAsFixed(2)}'),
-                            const SizedBox(height: 4),
-                            Divider(color: Colors.grey.shade600),
-                            const SizedBox(height: 4),
-                            Text('Subtotale: € ${prov.subtotale.toStringAsFixed(2)}'),
-                            Text('Sconto: -€ ${prov.sconto.toStringAsFixed(2)}'),
-                            const SizedBox(height: 8),
-                            Text(
-                              'Totale Finale: € ${prov.totaleFinale.toStringAsFixed(2)}',
-                              style: Theme.of(context).textTheme.titleMedium,
-                            ),
-                          ],
+                      // Riepilogo costi
+                      Card(
+                        child: Padding(
+                          padding: const EdgeInsets.all(16.0),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text('Riepilogo costi', style: Theme.of(context).textTheme.titleLarge),
+                              const SizedBox(height: 8),
+                              Text('Menu Adulti: € ${prov.costoMenuAdulti.toStringAsFixed(2)}'),
+                              Text('Menu Bambini: € ${prov.costoMenuBambini.toStringAsFixed(2)}'),
+                              Text('Servizi Extra: € ${prov.costoServizi.toStringAsFixed(2)}'),
+                              const SizedBox(height: 4),
+                              Divider(color: Colors.grey.shade600),
+                              const SizedBox(height: 4),
+                              Text('Subtotale: € ${prov.subtotale.toStringAsFixed(2)}'),
+                              Text('Sconto: -€ ${prov.sconto.toStringAsFixed(2)}'),
+                              const SizedBox(height: 8),
+                              Text(
+                                'Totale Finale: € ${prov.totaleFinale.toStringAsFixed(2)}',
+                                style: Theme.of(context).textTheme.titleMedium,
+                              ),
+                            ],
+                          ),
                         ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ),
-          ),
-          _buildNavigationControls(),
-        ],
-      ),
-    );
+            _buildNavigationControls(),
+          ],
+        ),
+      );
+    }
   }
-}
+  
+

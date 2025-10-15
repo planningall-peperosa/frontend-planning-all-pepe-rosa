@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "173591083829",
+    "project_id": "planning-all-pepe-rosa-923c7",
+    "storage_bucket": "planning-all-pepe-rosa-923c7.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:173591083829:android:d96dfe2e60b9ce2bd9aa7c",
+        "android_client_info": {
+          "package_name": "com.example.test_fotocamera_2"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDyTPfrUn2mREdN7fDeIfOQwzhkAmkIKtU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
