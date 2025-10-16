@@ -33,6 +33,9 @@ import '../widgets/firma_dialog.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'archivio_preventivi_screen.dart';
 
+import '../services/storage_service.dart';
+import '../widgets/firma_dialog.dart';
+
 enum _SignatureLayout { vertical, horizontal }
 
 // =========================
@@ -95,6 +98,8 @@ class DatiClienteScreen extends StatefulWidget {
 
 class _DatiClienteScreenState extends State<DatiClienteScreen> {
   final _formKey = GlobalKey<FormState>();
+
+  final StorageService _storageService = StorageService();
 
   final _nomeClienteController = TextEditingController();
   final _telefonoController = TextEditingController();
@@ -694,50 +699,6 @@ Future<bool> _salvaSuFirebase({bool popOnSuccess = false}) async {
     }
   }
 
-  Future<void> _duplicaPreventivo() async {
-    if (_isProcessing) return;
-    if (!_validateFormOrNotify()) return;
-
-    setState(() {
-      _isProcessing = true;
-      _busyAction = null;
-    });
-    _aggiornaBuilderDaiController();
-
-    final prov = Provider.of<PreventivoBuilderProvider>(context, listen: false);
-    final preventiviProvider = Provider.of<PreventiviProvider>(context, listen: false);
-
-    try {
-      final sw = Stopwatch()..start();
-      final summary = await prov.duplicaPreventivo(preventiviProvider: preventiviProvider);
-      sw.stop();
-      _logUi('duplicaPreventivo ${sw.elapsedMilliseconds}ms (ok=${summary != null})');
-
-      if (!mounted) return;
-      if (summary == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Duplicazione fallita')),
-        );
-        return;
-      }
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Preventivo duplicato')),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Errore duplicazione: $e')),
-      );
-      _logUi('duplica error: $e');
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isProcessing = false;
-          _busyAction = null;
-        });
-      }
-    }
-  }
 
   void _navigateBack(bool result) {
     if (!mounted) return;
@@ -826,83 +787,116 @@ Future<bool> _salvaSuFirebase({bool popOnSuccess = false}) async {
           child: CircularProgressIndicator(strokeWidth: 2),
         );
 
-    Future<void> _acquisisciFirmaEConferma() async {
-      if (_isProcessing) return;
+// Sostituisci la vecchia funzione _acquisisciFirmaEConferma con questa
 
-      // 1) Firma CLIENTE
-      final Uint8List? pngCliente = await showDialog<Uint8List?>(
-        context: context,
-        barrierDismissible: false,
-        builder: (_) => const FirmaDialog(title: 'Firma del cliente'),
-      );
-      if (pngCliente == null || pngCliente.isEmpty) return;
+  Future<void> _acquisisciFirmaEConferma() async {
+    if (_isProcessing) return;
 
-      // 2) Firma RISTORATORE
-      final Uint8List? pngRisto = await showDialog<Uint8List?>(
-        context: context,
-        barrierDismissible: false,
-        builder: (_) => const FirmaDialog(title: 'Firma Pepe Rosa'),
-      );
-      if (pngRisto == null || pngRisto.isEmpty) return;
-
-      setState(() {
-        _isProcessing = true;
-        _busyAction = 'firma';
-      });
-
-      try {
-        // salva eventuali modifiche pendenti prima della conferma
-        if (_hasLocalChangesDyn(builder)) {
-          final preventiviProvider =
-              Provider.of<PreventiviProvider>(context, listen: false);
-          final summary =
-              await builder.salvaPreventivo(preventiviProvider: preventiviProvider);
-          if (summary == null) throw Exception('Salvataggio fallito prima della conferma');
-          _clearLocalChangesDyn(builder);
-        }
-
-        // Header unico "Nettuno gg/mm/aaaa"
-        final headerText = 'Nettuno ${DateFormat('dd/MM/yyyy').format(DateTime.now())}';
-
-        // 3) Componi PNG (etichette sopra, cliente a sinistra / Pepe Rosa a destra, distanziate)
-        final composed = await _composeDualSignaturePng(
-          firmaCliente: pngCliente,
-          firmaRistoratore: pngRisto,
-          headerText: headerText,
-          didascaliaSinistra: 'Firma Cliente',
-          didascaliaDestra: 'Firma Pepe Rosa',
-        );
-
-        // 4) Upload + (ri)conferma: sovrascrive la firma anche se già confermato
-        final preventivoId = builder.preventivoId!;
-        final ok = await context
-            .read<PreventiviProvider>()
-            .caricaFirmaEConferma(preventivoId, composed);
-
-        if (!mounted) return;
+    // Prima di procedere, salviamo eventuali modifiche non salvate nei campi.
+    _aggiornaBuilderDaiController();
+    
+    // Valida che il cliente sia stato selezionato.
+    if (builder.cliente == null) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(ok
-                ? (isConfermato
-                    ? 'Firme riacquisite e aggiornate.'
-                    : 'Firme acquisite e preventivo confermato.')
-                : 'Errore durante acquisizione firme.'),
-          ),
+            const SnackBar(content: Text('Seleziona un cliente prima di confermare.')),
         );
-      } catch (e) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Errore: $e')));
-        _logUi('doppia-firma+conferma error: $e');
-      } finally {
-        if (mounted) {
-          setState(() {
-            _isProcessing = false;
-            _busyAction = null;
-          });
-        }
+        return;
+    }
+
+    // Se il preventivo è nuovo, deve essere salvato almeno una volta per avere un ID.
+    if ((builder.preventivoId ?? '').isEmpty) {
+      final salvataggioOk = await _salvaSuFirebase(popOnSuccess: false);
+      if (!salvataggioOk) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Salvataggio iniziale fallito. Impossibile procedere con la firma.')),
+        );
+        return;
       }
     }
 
+    // 1. Acquisizione firme (logica invariata)
+    final Uint8List? pngCliente = await showDialog<Uint8List?>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const FirmaDialog(title: 'Firma del cliente'),
+    );
+    if (pngCliente == null || pngCliente.isEmpty) return;
+
+    final Uint8List? pngRisto = await showDialog<Uint8List?>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const FirmaDialog(title: 'Firma Pepe Rosa'),
+    );
+    if (pngRisto == null || pngRisto.isEmpty) return;
+
+    setState(() {
+      _isProcessing = true;
+      _busyAction = 'firma';
+    });
+
+    try {
+      // 2. Composizione dell'immagine unica (logica invariata)
+      final headerText = 'Nettuno ${DateFormat('dd/MM/yyyy').format(DateTime.now())}';
+      final composed = await _composeDualSignaturePng(
+        firmaCliente: pngCliente,
+        firmaRistoratore: pngRisto,
+        headerText: headerText,
+        didascaliaSinistra: 'Firma Cliente',
+        didascaliaDestra: 'Firma Pepe Rosa',
+      );
+
+      final preventivoId = builder.preventivoId!;
+
+      // 3. UPLOAD SU FIREBASE STORAGE
+      // Usiamo il nostro nuovo StorageService per caricare l'immagine composta.
+      // Nota: il tuo codice compone le firme in una sola immagine, quindi carichiamo un solo file.
+      final firmaUrl = await _storageService.uploadSignature(
+        preventivoId,
+        composed,
+        'firma_composta.png',
+      );
+
+      // 4. AGGIORNAMENTO SU FIRESTORE
+      // Ora aggiorniamo direttamente il documento su Firestore con i nuovi dati.
+      await FirebaseFirestore.instance.collection('preventivi').doc(preventivoId).update({
+        'status': 'Confermato',
+        'data_conferma': Timestamp.now(),
+        'firma_url': firmaUrl, // Salviamo l'URL dell'immagine composta.
+      });
+      
+      // Aggiorniamo anche lo stato nel provider per riflettere il cambiamento nella UI
+      builder.setStato('Confermato'); 
+      
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            isConfermato
+                ? 'Firme riacquisite e aggiornate con successo.'
+                : 'Preventivo confermato e firmato con successo!',
+          ),
+          backgroundColor: Colors.green,
+        ),
+      );
+
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Errore durante la conferma: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      _logUi('doppia-firma+conferma error: $e');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isProcessing = false;
+          _busyAction = null;
+        });
+      }
+    }
+  }
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16.0),

@@ -41,49 +41,49 @@ class DefaultFirebaseOptions {
   }
 
   static const FirebaseOptions web = FirebaseOptions(
-    apiKey: 'AIzaSyB2rLY4ibAPpNL1BHjbfDnfJ-ihaO5zTIA',
-    appId: '1:173591083829:web:3623ec15983fb91fd9aa7c',
-    messagingSenderId: '173591083829',
-    projectId: 'planning-all-pepe-rosa-923c7',
-    authDomain: 'planning-all-pepe-rosa-923c7.firebaseapp.com',
-    storageBucket: 'planning-all-pepe-rosa-923c7.firebasestorage.app',
-    measurementId: 'G-EGGEJ1L8Z9',
+    apiKey: 'AIzaSyCpHkkt7GlX-qIUvCyQiwYCcdQHxUZZA5Y',
+    appId: '1:394570910879:web:1f5db25ee90f2572c126aa',
+    messagingSenderId: '394570910879',
+    projectId: 'peperosa-planning-v2',
+    authDomain: 'peperosa-planning-v2.firebaseapp.com',
+    storageBucket: 'peperosa-planning-v2.firebasestorage.app',
+    measurementId: 'G-VKWCMKM4V3',
   );
 
   static const FirebaseOptions android = FirebaseOptions(
-    apiKey: 'AIzaSyDyTPfrUn2mREdN7fDeIfOQwzhkAmkIKtU',
-    appId: '1:173591083829:android:d96dfe2e60b9ce2bd9aa7c',
-    messagingSenderId: '173591083829',
-    projectId: 'planning-all-pepe-rosa-923c7',
-    storageBucket: 'planning-all-pepe-rosa-923c7.firebasestorage.app',
+    apiKey: 'AIzaSyAkNHCih2rA4U0Wd-_VLZJPXcj4be2wiiU',
+    appId: '1:394570910879:android:72deab5455800825c126aa',
+    messagingSenderId: '394570910879',
+    projectId: 'peperosa-planning-v2',
+    storageBucket: 'peperosa-planning-v2.firebasestorage.app',
   );
 
   static const FirebaseOptions ios = FirebaseOptions(
-    apiKey: 'AIzaSyBzFNMTKWpnZBbv-j1_-UZ7Hp0jLXfhNMc',
-    appId: '1:173591083829:ios:fbd737c40cceb3fad9aa7c',
-    messagingSenderId: '173591083829',
-    projectId: 'planning-all-pepe-rosa-923c7',
-    storageBucket: 'planning-all-pepe-rosa-923c7.firebasestorage.app',
+    apiKey: 'AIzaSyBN3se5o7t9-uPwUIZDQnaRRuRHUMu83tE',
+    appId: '1:394570910879:ios:04d7fafff8fb5588c126aa',
+    messagingSenderId: '394570910879',
+    projectId: 'peperosa-planning-v2',
+    storageBucket: 'peperosa-planning-v2.firebasestorage.app',
     iosBundleId: 'com.example.testFotocamera2',
   );
 
   static const FirebaseOptions macos = FirebaseOptions(
-    apiKey: 'AIzaSyBzFNMTKWpnZBbv-j1_-UZ7Hp0jLXfhNMc',
-    appId: '1:173591083829:ios:fbd737c40cceb3fad9aa7c',
-    messagingSenderId: '173591083829',
-    projectId: 'planning-all-pepe-rosa-923c7',
-    storageBucket: 'planning-all-pepe-rosa-923c7.firebasestorage.app',
+    apiKey: 'AIzaSyBN3se5o7t9-uPwUIZDQnaRRuRHUMu83tE',
+    appId: '1:394570910879:ios:04d7fafff8fb5588c126aa',
+    messagingSenderId: '394570910879',
+    projectId: 'peperosa-planning-v2',
+    storageBucket: 'peperosa-planning-v2.firebasestorage.app',
     iosBundleId: 'com.example.testFotocamera2',
   );
 
   static const FirebaseOptions windows = FirebaseOptions(
-    apiKey: 'AIzaSyB2rLY4ibAPpNL1BHjbfDnfJ-ihaO5zTIA',
-    appId: '1:173591083829:web:afb1a45e83747470d9aa7c',
-    messagingSenderId: '173591083829',
-    projectId: 'planning-all-pepe-rosa-923c7',
-    authDomain: 'planning-all-pepe-rosa-923c7.firebaseapp.com',
-    storageBucket: 'planning-all-pepe-rosa-923c7.firebasestorage.app',
-    measurementId: 'G-CR9P5Z8RGS',
+    apiKey: 'AIzaSyCpHkkt7GlX-qIUvCyQiwYCcdQHxUZZA5Y',
+    appId: '1:394570910879:web:e3b9ffc2ce852fe1c126aa',
+    messagingSenderId: '394570910879',
+    projectId: 'peperosa-planning-v2',
+    authDomain: 'peperosa-planning-v2.firebaseapp.com',
+    storageBucket: 'peperosa-planning-v2.firebasestorage.app',
+    measurementId: 'G-05XSY4S2QK',
   );
 
 }

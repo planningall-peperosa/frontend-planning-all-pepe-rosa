@@ -465,12 +465,30 @@ class _ArchivioPreventiviScreenState extends State<ArchivioPreventiviScreen> {
                               const SizedBox(width: 6),
                               // TODO: La logica di duplicazione va riscritta per Firestore
                               IconButton(
-                                tooltip: 'Duplica',
+                                tooltip: 'Duplica Preventivo',
                                 icon: const Icon(Icons.copy_all),
-                                onPressed: () {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(content: Text('Funzione Duplica da implementare con Firestore')),
+                                onPressed: () async {
+                                  // Chiedi conferma all'utente
+                                  final conferma = await showDialog<bool>(
+                                    context: context,
+                                    builder: (ctx) => AlertDialog(
+                                      title: const Text('Duplicare il preventivo?'),
+                                      content: Text('Verrà creata una nuova bozza basata su "${preventivo.nomeEvento}".'),
+                                      actions: [
+                                        TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Annulla')),
+                                        ElevatedButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('Duplica')),
+                                      ],
+                                    ),
                                   );
+
+                                  if (conferma != true) return;
+
+                                  // Usa la nostra nuova funzione per preparare il provider con la copia
+                                  Provider.of<PreventivoBuilderProvider>(context, listen: false)
+                                      .preparaPerDuplicazione(preventivo);
+
+                                  // Naviga alla prima schermata del wizard per permettere all'utente di modificare la copia
+                                  Navigator.of(context).pushNamed('/crea-preventivo');
                                 },
                               ),
                             ],

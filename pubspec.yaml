@@ -25,8 +25,9 @@ dependencies:
   url_launcher: ^6.3.0
   font_awesome_flutter: ^10.7.0
   vibration: any
-  firebase_core: ^3.3.0  # Questa dovrebbe esserci già
-  cloud_firestore: ^5.1.0 # <-- AGGIUNGI QUESTA RIGA
+  firebase_core: ^3.3.0 
+  cloud_firestore: ^5.1.0 
+  firebase_storage: ^12.1.2
   
   
 

@@ -14,6 +14,7 @@ import '../models/preventivo_completo.dart';
 import '../models/fornitore_servizio.dart';
 import '../services/preventivi_service.dart';
 import '../models/preventivo_summary.dart';
+import '../models/preventivo_summary.dart';
 
 // --- LOG helper ---
 void _logBuilder(String msg) {
@@ -338,6 +339,7 @@ class PreventivoBuilderProvider with ChangeNotifier {
     notifyListeners();
   }
 
+
   void setNomeEvento(String nome) {
     final nv = nome;
     if (_nomeEvento == nv) return;
@@ -498,6 +500,16 @@ class PreventivoBuilderProvider with ChangeNotifier {
     markDirty();
     notifyListeners();
   }
+
+
+  void setStato(String nuovoStato) {
+    if (_status == nuovoStato) return; // Evita notifiche se lo stato non cambia
+    _status = nuovoStato;
+    markDirty();
+    notifyListeners();
+  }
+  
+
 
   void setTipoPasto(String? v) {
     if (_tipoPasto == v) return;
@@ -799,28 +811,31 @@ class PreventivoBuilderProvider with ChangeNotifier {
     _logBuilder('reset TOTAL ${total.elapsedMilliseconds}ms');
   }
 
-  Future<PreventivoSummary?> duplicaPreventivo({
-    required dynamic preventiviProvider, // dynamic: niente dipendenza circolare
-  }) async {
-    final suffix = '(Copia ${DateFormat('dd/MM HH:mm').format(DateTime.now())})';
-    final base = nomeEvento ?? '';
-    setNomeEvento(base.isEmpty ? 'Copia $suffix' : '$base $suffix');
+// In lib/providers/preventivo_builder_provider.dart -> SOSTITUISCI LA VECCHIA FUNZIONE CON QUESTA
 
+  /// Carica un preventivo esistente e lo prepara per essere salvato come nuova copia.
+  void preparaPerDuplicazione(Preventivo preventivoOriginale) {
+    // Carichiamo tutti i dati dell'originale nel nostro builder.
+    // Usiamo il metodo che già esiste per caricare i dati da una mappa.
+    caricaDaFirestoreMap(preventivoOriginale.toFirestoreMap(), id: preventivoOriginale.id);
+
+    // --- Ora applichiamo le regole di duplicazione alle variabili corrette ---
+
+    // 1. Rimuovi l'ID per forzare la creazione di un nuovo documento.
     _preventivoId = null;
-    _status = null;
-    _confermaPending = false;
 
+    // 2. Resetta lo stato a "Bozza".
+    _status = 'Bozza';
+    
+    // 3. Modifica il nome dell'evento per renderlo riconoscibile.
+    // Usiamo il setter così notifica anche i listener se necessario.
+    setNomeEvento('${preventivoOriginale.nomeEvento} (Copia)');
+    
+    // 4. Aggiorna la data di creazione alla data odierna.
+    _dataCreazione = DateTime.now();
+
+    // 5. Contrassegna il builder come "modificato" usando il metodo corretto.
+    markDirty();
     notifyListeners();
-
-    final summary = await salvaPreventivo(preventiviProvider: preventiviProvider);
-
-    try {
-      await preventiviProvider.hardRefresh(ignoreEditingOpen: true);
-    } catch (_) {}
-
-    _dirty = false;
-    _baselineJson = _safeSnapshotJson();
-    notifyListeners();
-    return summary;
   }
 }

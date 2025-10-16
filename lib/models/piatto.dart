@@ -22,33 +22,25 @@ class Piatto {
 
   static String? _asString(dynamic v) {
     if (v == null) return null;
-    if (v is String) return v;
-    if (v is List) {
-      return v.map((e) => e?.toString() ?? '')
-              .where((s) => s.isNotEmpty)
-              .join(', ');
-    }
     return v.toString();
   }
 
+  // --- MODIFICA: fromJson ora legge SOLO i campi standard di Firestore ---
   factory Piatto.fromJson(Map<String, dynamic> json) {
     return Piatto(
       idUnico: _asString(json['id_unico']) ?? '',
       genere:  _asString(json['genere']) ?? '',
-      // alcuni endpoint usano "piatto", altri "nome"
-      nome:    _asString(json['piatto'] ?? json['nome']) ?? 'Nome non disponibile',
+      nome:    _asString(json['nome']) ?? 'Nome non disponibile',
       descrizione: _asString(json['descrizione']),
       allergeni:   _asString(json['allergeni']),
-      // alcuni fogli hanno "link_foto_piatto", altri "link_foto"
-      linkFoto:    _asString(json['link_foto_piatto'] ?? json['link_foto']),
+      linkFoto:    _asString(json['link_foto_piatto']), // <-- LEGGE SOLO DA 'link_foto_piatto'
       tipologia:   _asString(json['tipologia']) ?? '',
     );
   }
   
-  // --- NUOVA AGGIUNTA: TRADUTTORE DA FIRESTORE ---
   factory Piatto.fromFirestore(DocumentSnapshot doc) {
     final data = doc.data() as Map<String, dynamic>;
-    // Riutilizziamo la logica fromJson che gestisce già i nomi dei campi diversi
+    data['id_unico'] = doc.id; 
     return Piatto.fromJson(data);
   }
 
@@ -72,13 +64,12 @@ class Piatto {
     );
   }
 
-  Map<String, dynamic> toJson() => {
-    'id_unico': idUnico,
+  Map<String, dynamic> toFirestoreMap() => {
     'genere': genere,
-    'nome': nome, // Salviamo con 'nome' per coerenza
+    'nome': nome,
     'descrizione': descrizione,
     'allergeni': allergeni,
-    'link_foto': linkFoto, // Salviamo con 'link_foto' per coerenza
+    'link_foto_piatto': linkFoto, // <-- SCRIVE SOLO SU 'link_foto_piatto'
     'tipologia': tipologia,
   };
 }

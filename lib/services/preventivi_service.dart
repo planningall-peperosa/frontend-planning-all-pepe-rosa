@@ -201,51 +201,6 @@ class PreventiviService {
     throw Exception('Errore PDF: ${res.statusCode}');
   }
 
-  // --- Duplicazione ----------------------------------------------------------
-  Future<String?> duplicaPreventivoDaId(
-    String preventivoId, {
-    String? nomeEventoOverride,
-    bool appendCopiaIfMissing = true,
-  }) async {
-    final t = Stopwatch()..start();
-    _logSvc('DUPL start (id=$preventivoId)');
-
-    final t1 = Stopwatch()..start();
-    final original = await getPreventivo(preventivoId);
-    t1.stop();
-    _logSvc('DUPL getPreventivo ${t1.elapsedMilliseconds}ms');
-
-    final payload = <String, dynamic>{...original};
-    payload.remove('preventivo_id');
-    payload.remove('status');
-    payload.remove('data_creazione');
-    payload.remove('data_modifica');
-    payload.remove('data_conferma');
-    payload.remove('firma_acquisita');
-
-    final currentName = (original['nome_evento'] as String?)?.trim() ?? '';
-    if (nomeEventoOverride != null && nomeEventoOverride.trim().isNotEmpty) {
-      payload['nome_evento'] = nomeEventoOverride.trim();
-    } else if (appendCopiaIfMissing) {
-      payload['nome_evento'] =
-          currentName.isEmpty ? '(copia)' : '$currentName (copia)';
-    }
-
-    final t2 = Stopwatch()..start();
-    final resp = await creaNuovoPreventivo(payload);
-    t2.stop();
-    _logSvc('DUPL creaNuovoPreventivo ${t2.elapsedMilliseconds}ms');
-
-    final success = resp['success'] == true;
-    final nuovoId = resp['preventivo_id'] as String?;
-    t.stop();
-    _logSvc('DUPL done total=${t.elapsedMilliseconds}ms success=$success nuovoId=$nuovoId');
-    if (success && nuovoId != null && nuovoId.isNotEmpty) {
-      return nuovoId;
-    }
-    return null;
-  }
-
   // --------------------------------------------------------------------------
   Map<String, dynamic> _decodeJsonOk(http.Response res, String ctx) {
     final body = utf8.decode(res.bodyBytes);

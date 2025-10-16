@@ -1,10 +1,14 @@
 // lib/providers/piatti_provider.dart
+
 import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart'; // <-- MODIFICA: Import per Firestore
 import '../models/piatto.dart';
-import '../services/piatti_service.dart';
+// import '../services/piatti_service.dart'; // <-- MODIFICA: Non ci serve più il vecchio service
 
 class PiattiProvider with ChangeNotifier {
-  final PiattiService _service = PiattiService();
+  // --- MODIFICA: Rimuoviamo il PiattiService e usiamo un'istanza diretta di Firestore ---
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final String _collectionName = 'piatti'; // Nome della nostra collezione su Firestore
 
   List<Piatto> _piatti = [];
   bool _loading = false;
@@ -14,73 +18,75 @@ class PiattiProvider with ChangeNotifier {
   bool get isLoading => _loading;
   String? get error => _error;
 
+  // --- MODIFICA: Legge tutti i piatti da FIRESTORE ---
   Future<void> fetch() async {
-    _loading = true; _error = null; notifyListeners();
+    _loading = true;
+    _error = null;
+    notifyListeners();
     try {
-      final data = await _service.getPiatti();
-      _piatti = data.map<Piatto>((j) => Piatto.fromJson(j)).toList();
+      final snapshot = await _firestore.collection(_collectionName).get();
+      // Usiamo il costruttore fromFirestore che abbiamo già nel modello Piatto
+      _piatti = snapshot.docs.map((doc) => Piatto.fromFirestore(doc)).toList();
     } catch (e) {
-      _error = e.toString();
+      _error = "Errore nel caricamento dei piatti: ${e.toString()}";
     } finally {
-      _loading = false; notifyListeners();
+      _loading = false;
+      notifyListeners();
     }
   }
 
+  // --- MODIFICA: Aggiunge un nuovo piatto su FIRESTORE ---
   Future<bool> add(Map<String, dynamic> payload) async {
-    _loading = true; notifyListeners();
+    _loading = true;
+    notifyListeners();
     try {
-      final res = await _service.addPiatto(payload);
-      if (res['statusCode'] == 201) {
-        await fetch();
-        return true;
-      }
-      _error = res['body']?['detail'] ?? 'Errore sconosciuto';
-      return false;
+      // Il metodo .add() crea un nuovo documento con un ID generato automaticamente
+      await _firestore.collection(_collectionName).add(payload);
+      // Dopo aver aggiunto, ricarichiamo la lista per avere i dati aggiornati
+      await fetch(); 
+      return true;
     } catch (e) {
-      _error = e.toString(); return false;
+      _error = "Errore nell'aggiunta del piatto: ${e.toString()}";
+      return false;
     } finally {
-      _loading = false; notifyListeners();
+      _loading = false;
+      notifyListeners();
     }
   }
 
+  // --- MODIFICA: Aggiorna un piatto esistente su FIRESTORE ---
   Future<bool> update(String idUnico, Map<String, dynamic> payload) async {
+    _loading = true;
+    notifyListeners();
     try {
-      final res = await _service.updatePiatto(idUnico, payload);
-      if (res['statusCode'] == 200) {
-        final i = _piatti.indexWhere((p) => p.idUnico == idUnico);
-        if (i != -1) {
-          // aggiorno solo i campi cambiati (mappati con nomi foglio)
-          _piatti[i] = _piatti[i].copyWith(
-            genere:      payload['genere'],
-            nome:        payload['nome'],        // << era 'piatto'
-            descrizione: payload['descrizione'],
-            allergeni:   payload['allergeni'],
-            linkFoto:    payload['link_foto'],   // << era 'link_foto_piatto'
-            tipologia:   payload['tipologia'],
-          );
-          notifyListeners();
-        }
-        return true;
-      }
-      _error = res['body']?['detail'] ?? 'Errore ${res['statusCode']}';
-      return false;
+      // Usiamo .doc(idUnico) per puntare al documento specifico e .update() per modificarlo
+      await _firestore.collection(_collectionName).doc(idUnico).update(payload);
+      await fetch(); // Ricarichiamo per semplicità, in futuro si può ottimizzare
+      return true;
     } catch (e) {
-      _error = e.toString(); notifyListeners(); return false;
+      _error = "Errore nell'aggiornamento del piatto: ${e.toString()}";
+      return false;
+    } finally {
+      _loading = false;
+      notifyListeners();
     }
   }
 
+  // --- MODIFICA: Elimina un piatto da FIRESTORE ---
   Future<bool> remove(String idUnico) async {
+    _loading = true;
+    notifyListeners();
     try {
-      final res = await _service.deletePiatto(idUnico);
-      if (res['statusCode'] == 200) {
-        _piatti.removeWhere((p) => p.idUnico == idUnico);
-        notifyListeners();
-        return true;
-      }
-      _error = res['body']?['detail'] ?? 'Errore ${res['statusCode']}';
-      return false;
+      // Usiamo .doc(idUnico) per puntare al documento specifico e .delete() per rimuoverlo
+      await _firestore.collection(_collectionName).doc(idUnico).delete();
+      await fetch(); // Ricarichiamo per avere la lista aggiornata
+      return true;
     } catch (e) {
-      _error = e.toString(); notifyListeners(); return false;
+      _error = "Errore nell'eliminazione del piatto: ${e.toString()}";
+      return false;
+    } finally {
+      _loading = false;
+      notifyListeners();
     }
   }
 }

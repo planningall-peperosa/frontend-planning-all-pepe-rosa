@@ -182,6 +182,7 @@ class _SetupScreenState extends State<SetupScreen> {
     );
   }
 
+
   Future<void> _openPiattoDialog({Piatto? edit}) async {
     final prov = context.read<PiattiProvider>();
     final formKey = GlobalKey<FormState>();
@@ -191,8 +192,8 @@ class _SetupScreenState extends State<SetupScreen> {
     final descrCtrl = TextEditingController(text: edit?.descrizione ?? '');
     final allergCtrl= TextEditingController(text: edit?.allergeni ?? '');
     final fotoCtrl  = TextEditingController(text: edit?.linkFoto ?? '');
+    // Il controller del prezzo è stato RIMOSSO
 
-    // <<< flags dichiarati fuori dal builder
     bool saving = false;
     bool deleting = false;
 
@@ -205,23 +206,20 @@ class _SetupScreenState extends State<SetupScreen> {
             if (!formKey.currentState!.validate()) return;
             setStateDialog(() => saving = true);
 
+            // --- MODIFICA CHIAVE: Payload aggiornato ---
             final payload = {
               'genere': genere,
-              'piatto': nomeCtrl.text.trim(),            // chiave attesa dal backend
+              'nome': nomeCtrl.text.trim(),
               'descrizione': descrCtrl.text.trim(),
               'allergeni': allergCtrl.text.trim(),
-              'link_foto_piatto': fotoCtrl.text.trim(),  // chiave attesa dal backend
+              'link_foto_piatto': fotoCtrl.text.trim(), // <-- CORRETTO
               'tipologia': tipologia,
+              // Il campo 'prezzo' è stato RIMOSSO
             };
 
             final ok = edit == null
-                ? await prov.add(payload)                // add() già fa fetch() on success
+                ? await prov.add(payload)
                 : await prov.update(edit.idUnico, payload);
-
-            // Cintura di sicurezza: dopo update, riallinea dal foglio
-            if (ok && edit != null) {
-              await prov.fetch();
-            }
 
             if (!ctx.mounted) return;
             setStateDialog(() => saving = false);
@@ -273,20 +271,10 @@ class _SetupScreenState extends State<SetupScreen> {
                 children: [
                   Expanded(child: Text(edit == null ? 'Nuovo piatto' : 'Modifica piatto')),
                   if (edit != null)
-                    AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 150),
-                      child: deleting
-                          ? const SizedBox(
-                              key: ValueKey('spin_del'),
-                              width: 20, height: 20,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : IconButton(
-                              key: const ValueKey('btn_del'),
-                              tooltip: 'Elimina',
-                              icon: const Icon(Icons.delete_outline),
-                              onPressed: _doDelete,
-                            ),
+                    IconButton(
+                      tooltip: 'Elimina',
+                      icon: const Icon(Icons.delete_outline),
+                      onPressed: deleting ? null : _doDelete,
                     ),
                 ],
               ),
@@ -308,6 +296,7 @@ class _SetupScreenState extends State<SetupScreen> {
                       validator: (v)=> (v==null || v.trim().isEmpty) ? 'Richiesto' : null,
                     ),
                     const SizedBox(height: 8),
+                    // Il TextFormField del prezzo è stato RIMOSSO
                     DropdownButtonFormField<String>(
                       value: tipologia,
                       items: _tipologie.map((t)=>DropdownMenuItem(value:t, child: Text(t))).toList(),
@@ -338,6 +327,7 @@ class _SetupScreenState extends State<SetupScreen> {
       ),
     );
   }
+
 
   Widget _buildMenuTemplatesSection() {
     final theme = Theme.of(context);
@@ -457,22 +447,24 @@ class _SetupScreenState extends State<SetupScreen> {
     );
   }
 
+
   Future<void> _openMenuDialog({MenuTemplate? edit}) async {
     final menuProv = context.read<MenuTemplatesProvider>();
     final piattiProv = context.read<PiattiProvider>();
 
     final formKey = GlobalKey<FormState>();
-    final nomeCtrl   = TextEditingController(text: edit?.nomeMenu ?? '');
+    final nomeCtrl = TextEditingController(text: edit?.nomeMenu ?? '');
     final prezzoCtrl = TextEditingController(
         text: edit != null ? edit.prezzo.toStringAsFixed(2).replaceAll('.', ',') : '');
+    final prezzoBambinoCtrl = TextEditingController(
+        text: edit != null ? edit.prezzoBambino.toStringAsFixed(2).replaceAll('.', ',') : '0,00');
+
     String tipologia = edit?.tipologia ?? _tipologie.first;
 
-    // composizione: genere -> lista id_unico
     final Map<String, List<String>> composizione = {
       for (final g in _generi) g: List<String>.from(edit?.composizioneDefault[g] ?? []),
     };
 
-    // <<< flags fuori dal builder
     bool saving = false;
     bool deleting = false;
 
@@ -486,15 +478,14 @@ class _SetupScreenState extends State<SetupScreen> {
             setStateDialog(() => saving = true);
 
             final prezzo = double.tryParse(prezzoCtrl.text.replaceAll(',', '.')) ?? 0.0;
+            final prezzoBambino = double.tryParse(prezzoBambinoCtrl.text.replaceAll(',', '.')) ?? 0.0;
 
             final payload = {
-              'MENU': nomeCtrl.text.trim(),
+              'nome_menu': nomeCtrl.text.trim(),
               'prezzo': prezzo,
+              'prezzo_bambino': prezzoBambino,
               'tipologia': tipologia,
-              'composizione_default_json': {
-                for (final g in _generi)
-                  if ((composizione[g] ?? const []).isNotEmpty) g: composizione[g],
-              },
+              'composizione_default': composizione,
             };
 
             final ok = edit == null
@@ -510,40 +501,48 @@ class _SetupScreenState extends State<SetupScreen> {
                 SnackBar(content: Text(edit == null ? 'Menu creato' : 'Menu aggiornato')),
               );
             } else {
-              ScaffoldMessenger.of(context)
-                  .showSnackBar(SnackBar(content: Text(menuProv.error ?? 'Operazione non riuscita')));
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                  content: Text(menuProv.error ?? 'Operazione non riuscita'),
+                  backgroundColor: Colors.red));
             }
           }
 
           Future<void> _doDelete() async {
+            // Assicurati di essere in modalità modifica
             if (edit == null) return;
+
+            // Chiedi conferma all'utente
             final conferma = await showDialog<bool>(
-              context: ctx,
+              context: ctx, // Usa il contesto del dialog
               builder: (dctx) => AlertDialog(
                 title: const Text('Eliminare il menu?'),
-                content: const Text('Questa operazione non può essere annullata.'),
+                content: Text('Stai per eliminare "${edit.nomeMenu}". L\'operazione non può essere annullata.'),
                 actions: [
                   TextButton(onPressed: () => Navigator.pop(dctx, false), child: const Text('Annulla')),
                   ElevatedButton(onPressed: () => Navigator.pop(dctx, true), child: const Text('Elimina')),
                 ],
               ),
             );
+
+            // Se l'utente non conferma, interrompi
             if (conferma != true) return;
 
+            // Mostra lo spinner e chiama il provider
             setStateDialog(() => deleting = true);
-            final ok = await menuProv.remove(edit.idMenu);
+            final ok = await menuProv.remove(edit.idMenu); // Usa l'ID corretto
             if (!ctx.mounted) return;
             setStateDialog(() => deleting = false);
 
+            // Gestisci il risultato
             if (ok) {
-              Navigator.pop(ctx);
+              Navigator.pop(ctx); // Chiudi la finestra di modifica
               ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Menu eliminato')));
             } else {
               ScaffoldMessenger.of(context)
                   .showSnackBar(SnackBar(content: Text(menuProv.error ?? 'Eliminazione fallita')));
             }
-          }
-
+          }          
+          // --- QUESTA È LA PARTE UI COMPLETA ---
           return AbsorbPointer(
             absorbing: saving || deleting,
             child: AlertDialog(
@@ -551,24 +550,13 @@ class _SetupScreenState extends State<SetupScreen> {
                 children: [
                   Expanded(child: Text(edit == null ? 'Nuovo menu' : 'Modifica menu')),
                   if (edit != null)
-                    AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 150),
-                      child: deleting
-                          ? const SizedBox(
-                              key: ValueKey('spin_del'),
-                              width: 20, height: 20,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : IconButton(
-                              key: const ValueKey('btn_del'),
-                              tooltip: 'Elimina',
-                              icon: const Icon(Icons.delete_outline),
-                              onPressed: _doDelete,
-                            ),
+                    IconButton(
+                      icon: const Icon(Icons.delete_outline),
+                      onPressed: _doDelete,
                     ),
                 ],
               ),
-              contentPadding: const EdgeInsets.fromLTRB(16,12,16,8),
+              contentPadding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
               content: SingleChildScrollView(
                 child: Form(
                   key: formKey,
@@ -576,12 +564,12 @@ class _SetupScreenState extends State<SetupScreen> {
                     TextFormField(
                       controller: nomeCtrl,
                       decoration: const InputDecoration(labelText: 'Nome menu'),
-                      validator: (v)=> (v==null || v.trim().isEmpty) ? 'Richiesto' : null,
+                      validator: (v) => (v == null || v.trim().isEmpty) ? 'Richiesto' : null,
                     ),
                     const SizedBox(height: 8),
                     TextFormField(
                       controller: prezzoCtrl,
-                      decoration: const InputDecoration(labelText: 'Prezzo (€/persona)'),
+                      decoration: const InputDecoration(labelText: 'Prezzo Adulto (€)'),
                       keyboardType: const TextInputType.numberWithOptions(decimal: true),
                       validator: (v) {
                         final d = double.tryParse((v ?? '').replaceAll(',', '.')) ?? 0;
@@ -589,15 +577,19 @@ class _SetupScreenState extends State<SetupScreen> {
                       },
                     ),
                     const SizedBox(height: 8),
+                    TextFormField(
+                      controller: prezzoBambinoCtrl,
+                      decoration: const InputDecoration(labelText: 'Prezzo Bambino (€)'),
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    ),
+                    const SizedBox(height: 8),
                     DropdownButtonFormField<String>(
                       value: tipologia,
-                      items: _tipologie.map((t)=>DropdownMenuItem(value:t, child: Text(t))).toList(),
-                      onChanged: (v)=> tipologia = v!,
+                      items: _tipologie.map((t) => DropdownMenuItem(value: t, child: Text(t))).toList(),
+                      onChanged: (v) => tipologia = v!,
                       decoration: const InputDecoration(labelText: 'Tipologia'),
                     ),
                     const SizedBox(height: 12),
-
-                    // blocchi per ogni genere
                     ..._generi.map((g) {
                       final selectedIds = composizione[g]!;
                       final selectedPiatti = piattiProv.piatti.where((p) => selectedIds.contains(p.idUnico)).toList();
@@ -625,11 +617,12 @@ class _SetupScreenState extends State<SetupScreen> {
                           )
                         else
                           Wrap(
-                            spacing: 6, runSpacing: -6,
+                            spacing: 6,
+                            runSpacing: -6,
                             children: selectedPiatti.map((p) => Chip(
-                              label: Text(p.nome),
-                              onDeleted: () => setStateDialog(() => composizione[g]!.remove(p.idUnico)),
-                            )).toList(),
+                                    label: Text(p.nome),
+                                    onDeleted: () => setStateDialog(() => composizione[g]!.remove(p.idUnico)),
+                                  )).toList(),
                           ),
                         const Divider(),
                       ]);
@@ -638,7 +631,7 @@ class _SetupScreenState extends State<SetupScreen> {
                 ),
               ),
               actions: [
-                TextButton(onPressed: saving || deleting ? null : ()=>Navigator.pop(ctx), child: const Text('Annulla')),
+                TextButton(onPressed: saving || deleting ? null : () => Navigator.pop(ctx), child: const Text('Annulla')),
                 ElevatedButton(
                   onPressed: saving || deleting ? null : _doSave,
                   child: saving
@@ -652,10 +645,6 @@ class _SetupScreenState extends State<SetupScreen> {
       ),
     );
   }
-
-
-
-
 
   Future<List<String>?> _pickPiatti({
     required String genere,
