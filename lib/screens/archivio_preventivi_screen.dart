@@ -1,3 +1,5 @@
+// lib/screens/archivio_preventivi_screen.dart
+
 // NUOVI IMPORT RICHIESTI PER FIREBASE
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
@@ -13,41 +15,9 @@ import 'crea_preventivo_screen.dart';
 import '../services/preventivi_service.dart';
 import '../widgets/refresh_button.dart';
 
-// --- MODIFICA: NUOVO MODELLO DATI ---
-// Questo piccolo "modello" rappresenta un preventivo letto da Firestore.
-// Sostituisce il vecchio `PreventivoSummary` per questa schermata.
-class Preventivo {
-  final String id;
-  final String nomeCliente;
-  final String nomeEvento;
-  final DateTime dataEvento;
-  final String status;
-  // Potremmo aggiungere altri campi qui se servono per la lista
-
-  Preventivo({
-    required this.id,
-    required this.nomeCliente,
-    required this.nomeEvento,
-    required this.dataEvento,
-    required this.status,
-  });
-
-  // Factory constructor per creare un'istanza da un DocumentSnapshot di Firestore
-  factory Preventivo.fromFirestore(DocumentSnapshot doc) {
-    // Converte i dati del documento Firestore in un oggetto che possiamo usare facilmente
-    Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
-    return Preventivo(
-      id: doc.id,
-      // NOTA: Per mostrare il nome del cliente nella lista, è necessario
-      // che questo campo sia presente direttamente nel documento del preventivo.
-      // È una pratica comune chiamata "denormalizzazione" per migliorare le performance.
-      nomeCliente: data['nome_cliente'] ?? 'Cliente Sconosciuto',
-      nomeEvento: data['nome_evento'] ?? 'Senza Nome',
-      dataEvento: (data['data_evento'] as Timestamp?)?.toDate() ?? DateTime.now(),
-      status: data['status'] ?? 'Sconosciuto',
-    );
-  }
-}
+// --- MODIFICA CHIAVE: IMPORT DEL MODELLO ESTERNO ---
+// Ora importiamo la classe Preventivo dal suo file dedicato.
+import '../models/preventivo.dart'; 
 
 
 class ArchivioPreventiviScreen extends StatefulWidget {
@@ -458,22 +428,24 @@ class _ArchivioPreventiviScreenState extends State<ArchivioPreventiviScreen> {
                               Text('ID: ${preventivo.id}', style: Theme.of(context).textTheme.bodySmall),
                             ],
                           ),
+// In lib/screens/archivio_preventivi_screen.dart
+
+// Trova l'IconButton con tooltip 'Duplica' e sostituisci la sua proprietà onPressed:
+
                           trailing: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
                               Chip(label: Text(preventivo.status)),
                               const SizedBox(width: 6),
-                              // TODO: La logica di duplicazione va riscritta per Firestore
                               IconButton(
                                 tooltip: 'Duplica Preventivo',
                                 icon: const Icon(Icons.copy_all),
                                 onPressed: () async {
-                                  // Chiedi conferma all'utente
                                   final conferma = await showDialog<bool>(
                                     context: context,
                                     builder: (ctx) => AlertDialog(
                                       title: const Text('Duplicare il preventivo?'),
-                                      content: Text('Verrà creata una nuova bozza basata su "${preventivo.nomeEvento}".'),
+                                      content: Text('Verrà creata una nuova bozza basata su "${preventivo.nomeCliente} - ${preventivo.nomeEvento}".'),
                                       actions: [
                                         TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Annulla')),
                                         ElevatedButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('Duplica')),
@@ -481,14 +453,40 @@ class _ArchivioPreventiviScreenState extends State<ArchivioPreventiviScreen> {
                                     ),
                                   );
 
-                                  if (conferma != true) return;
+                                  if (conferma != true || !mounted) return;
 
-                                  // Usa la nostra nuova funzione per preparare il provider con la copia
-                                  Provider.of<PreventivoBuilderProvider>(context, listen: false)
-                                      .preparaPerDuplicazione(preventivo);
+                                  showDialog(
+                                    context: context,
+                                    barrierDismissible: false,
+                                    builder: (ctx) => const Center(child: CircularProgressIndicator()),
+                                  );
 
-                                  // Naviga alla prima schermata del wizard per permettere all'utente di modificare la copia
-                                  Navigator.of(context).pushNamed('/crea-preventivo');
+                                  try {
+                                    // Chiama la nuova funzione del provider passando l'ID
+                                    await Provider.of<PreventivoBuilderProvider>(context, listen: false)
+                                        .duplicaDaOriginale(preventivo.id); 
+
+                                    Navigator.of(context, rootNavigator: true).pop(); // Chiudi il dialog di caricamento
+
+                                    // Naviga alla schermata di creazione
+                                    if(mounted){
+                                       Navigator.of(context).push(
+                                        MaterialPageRoute(builder: (_) => const CreaPreventivoScreen()),
+                                      );
+                                    }
+
+                                  } catch (e) {
+                                      Navigator.of(context, rootNavigator: true).pop(); // Chiudi il dialog di caricamento anche in caso di errore
+                                      
+                                      if(mounted){
+                                        ScaffoldMessenger.of(context).showSnackBar(
+                                          SnackBar(
+                                            content: Text('Errore durante la duplicazione: ${e.toString()}'),
+                                            backgroundColor: Colors.red,
+                                          ),
+                                        );
+                                      }
+                                  }
                                 },
                               ),
                             ],

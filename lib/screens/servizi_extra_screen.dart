@@ -395,10 +395,18 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
     );
   }
 
+
   Widget _buildDatiEventoSection(PreventivoBuilderProvider builder) {
     final numeroOspiti = builder.numeroOspiti ?? 0;
     final numeroBambini = builder.numeroBambini;
     final adulti = (numeroOspiti - numeroBambini).clamp(0, numeroOspiti);
+
+    // --- AGGIUNTA CHIAVE ---
+    // Usiamo il dato del builder, che è stato popolato dal caricamento
+    final dataEventoText = builder.dataEvento == null
+        ? 'Seleziona'
+        : DateFormat('dd/MM/yyyy').format(builder.dataEvento!);
+    // ----------------------
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -444,6 +452,7 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
                         : null,
                   ),
                   child: Text(
+                    // QUESTA RIGHA È LA CHIAVE: leggerà direttamente dal Provider
                     builder.dataEvento == null
                         ? 'Seleziona'
                         : DateFormat('dd/MM/yyyy').format(builder.dataEvento!),
@@ -506,6 +515,7 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
       ],
     );
   }
+
 
   Widget _buildServiziExtraSection(
       List<String> allRuoli, PreventivoBuilderProvider builder) {

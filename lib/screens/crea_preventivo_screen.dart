@@ -2,6 +2,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:intl/intl.dart'; // Aggiunto per formattare il log della data
 
 import '../providers/preventivo_builder_provider.dart';
 import '../models/piatto.dart';
@@ -41,9 +42,18 @@ class _CreaPreventivoScreenState extends State<CreaPreventivoScreen> {
 
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (widget.preventivoId != null) {
+        // Modalità Modifica (richiede fetch da Firestore)
         await _caricaDatiPreventivo(widget.preventivoId!);
       } else {
-        Provider.of<PreventivoBuilderProvider>(context, listen: false).reset();
+        // Modalità Creazione (da zero o Duplicazione)
+        
+        // Carica i templates
+        final templates = await _menuTemplatesFuture;
+
+        // Sincronizziamo lo stato locale della UI con il Provider 
+        // (che ora contiene i dati del duplicato, se presenti)
+        _sincronizzaStatoUI(templates);
+        
         setState(() => _isLoading = false);
       }
     });
@@ -60,8 +70,32 @@ class _CreaPreventivoScreenState extends State<CreaPreventivoScreen> {
     }
   }
 
+  // NUOVA FUNZIONE DI SINCRONIZZAZIONE DELLO STATO LOCALE
+  void _sincronizzaStatoUI(List<MenuTemplate> templates) {
+      if (!mounted) return;
 
+      final preventivoBuilder = Provider.of<PreventivoBuilderProvider>(context, listen: false);
+      
+      // LOG RICHIESTO DALL'UTENTE: stampiamo la data che il Provider possiede
+      print("flutter: [DEBUG CARICA] Data evento dal Provider: ${preventivoBuilder.dataEvento != null ? DateFormat('dd/MM/yyyy').format(preventivoBuilder.dataEvento!) : 'NULL'}");
 
+      setState(() {
+        // Sincronizza il prezzo manuale
+        _prezzoManualeController.text = preventivoBuilder.prezzoMenuAdulto > 0
+            ? preventivoBuilder.prezzoMenuAdulto.toStringAsFixed(2).replaceAll('.', ',')
+            : '';
+
+        // Sincronizza il template selezionato
+        _selectedTemplate = templates.cast<MenuTemplate?>().firstWhere(
+            (t) => t?.nomeMenu == preventivoBuilder.nomeMenuTemplate,
+            orElse: () => null);
+
+        // Sincronizza il menu (usiamo Map.from() per creare una nuova istanza)
+        _menuInCostruzione = Map.from(preventivoBuilder.menu);
+      });
+  }
+
+  // FUNZIONE AGGIORNATA PER IL CARICAMENTO DA FIREBASE
   Future<void> _caricaDatiPreventivo(String id) async {
     try {
       final doc = await FirebaseFirestore.instance.collection('preventivi').doc(id).get();
@@ -70,24 +104,14 @@ class _CreaPreventivoScreenState extends State<CreaPreventivoScreen> {
         final data = doc.data() as Map<String, dynamic>;
         final preventivoBuilder = Provider.of<PreventivoBuilderProvider>(context, listen: false);
         
-        // --- MODIFICA CHIAVE: Passiamo l'ID al provider ---
-        preventivoBuilder.caricaDaFirestoreMap(data, id: id);
+        // Carica i dati nel provider (in modalità modifica)
+        preventivoBuilder.caricaDaFirestoreMap(data, id: widget.preventivoId); 
 
-        final templates = await _menuTemplatesFuture;
+        // Avviamo il caricamento dei templates
+        final templates = await _menuTemplatesFuture; 
         
-        setState(() {
-          _menuInCostruzione = Map.from(preventivoBuilder.menu);
-          if (preventivoBuilder.nomeMenuTemplate != null) {
-            try {
-              _selectedTemplate = templates.firstWhere((t) => t.nomeMenu == preventivoBuilder.nomeMenuTemplate);
-            } catch (_) {
-              _selectedTemplate = null;
-            }
-          }
-          if (preventivoBuilder.prezzoMenuAdulto > 0) {
-            _prezzoManualeController.text = preventivoBuilder.prezzoMenuAdulto.toStringAsFixed(2).replaceAll('.', ',');
-          }
-        });
+        // Chiama la funzione di sincronizzazione dello stato locale
+        _sincronizzaStatoUI(templates);
 
       } else {
         if(mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Preventivo non trovato.')));
@@ -98,6 +122,7 @@ class _CreaPreventivoScreenState extends State<CreaPreventivoScreen> {
       if(mounted) setState(() => _isLoading = false);
     }
   }
+
 
   Future<void> _salvaPreventivo() async {
     setState(() => _isSaving = true);
@@ -505,15 +530,18 @@ class _CreaPreventivoScreenState extends State<CreaPreventivoScreen> {
             onPressed: () {
               final builder = Provider.of<PreventivoBuilderProvider>(context, listen: false);
 
+              // 1. Commit Menu alla fine
+              _commitMenuToProvider();
+
+              // 2. Validazione
               if (builder.tipoPasto == null || builder.tipoPasto!.isEmpty) {
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(content: Text('Seleziona Pranzo o Cena per proseguire.')),
                 );
                 return;
               }
-
-              _commitMenuToProvider();
-
+              
+              // 3. Navigazione
               Navigator.push(
                 context,
                 MaterialPageRoute(builder: (_) => const ServiziExtraScreen()),

@@ -14,7 +14,8 @@ import '../models/preventivo_completo.dart';
 import '../models/fornitore_servizio.dart';
 import '../services/preventivi_service.dart';
 import '../models/preventivo_summary.dart';
-import '../models/preventivo_summary.dart';
+
+import '../models/preventivo.dart';
 
 // --- LOG helper ---
 void _logBuilder(String msg) {
@@ -66,17 +67,22 @@ class PreventivoBuilderProvider with ChangeNotifier {
   // --- NUOVI METODI DI TRADUZIONE PER FIRESTORE (AGGIORNATI) ---
   // =======================================================================
 
+  // In lib/providers/preventivo_builder_provider.dart
 
-  void caricaDaFirestoreMap(Map<String, dynamic> data, {required String id}) {
+  void caricaDaFirestoreMap(Map<String, dynamic> data, {String? id}) {
     _hydrating = true;
     
+    // --- Logging temporaneo per debug ---
+    print('[DEBUG LOAD] Inizio Caricamento: ID=$id');
+    print('[DEBUG LOAD] Dati grezzi ricevuti: ${data.keys.length} campi');
+    // ------------------------------------
+
     reset(); 
     _hydrating = true; 
 
-    // --- MODIFICA CHIAVE: Memorizziamo subito l'ID del preventivo ---
-    _preventivoId = id;
+    // Solo se l'ID viene fornito, lo impostiamo.
+    _preventivoId = id; 
 
-    // Il resto della funzione rimane identico...
     _nomeEvento = data['nome_evento'];
     _numeroOspiti = data['numero_ospiti'];
     _status = data['status'];
@@ -86,12 +92,10 @@ class PreventivoBuilderProvider with ChangeNotifier {
     _noteSconto = data['note_sconto'];
     _acconto = (data['acconto'] as num?)?.toDouble();
     _tipoPasto = data['tipo_pasto'];
-
     _prezzoMenuAdulto = (data['prezzo_menu_adulto'] as num?)?.toDouble() ?? 0.0;
     _numeroBambini = data['numero_bambini'] ?? 0;
     _prezzoMenuBambino = (data['prezzo_menu_bambino'] as num?)?.toDouble() ?? 0.0;
     _menuBambini = data['menu_bambini'];
-
     _dataEvento = (data['data_evento'] as Timestamp?)?.toDate();
     _dataCreazione = (data['data_creazione'] as Timestamp?)?.toDate();
     
@@ -99,15 +103,30 @@ class PreventivoBuilderProvider with ChangeNotifier {
       _cliente = Cliente.fromJson(data['cliente']);
     }
 
+    // --- MODIFICA CHIAVE: Ricostruzione dei Piatti da Dati Parziali ---
     if (data['menu'] is Map) {
       final menuDaDb = data['menu'] as Map<String, dynamic>;
       _menu.clear();
       menuDaDb.forEach((genere, piattiList) {
         if (piattiList is List) {
-          _menu[genere] = piattiList.map((piattoData) => Piatto.fromJson(piattoData)).toList();
+          _menu[genere] = piattiList.map((piattoData) {
+            final Map<String, dynamic> json = piattoData is Map ? piattoData as Map<String, dynamic> : {};
+            
+            // Ricostruiamo un oggetto Piatto completo dai dati minimi salvati nel preventivo
+            return Piatto(
+              idUnico: json['id_unico'] ?? 'custom_${DateTime.now().millisecondsSinceEpoch}',
+              genere: genere,
+              nome: json['nome'] ?? json['piatto'] ?? 'Piatto Sconosciuto',
+              tipologia: (json['custom'] == true || json['tipologia'] == 'fuori_menu') ? 'fuori_menu' : (json['tipologia'] ?? 'standard'),
+              descrizione: json['descrizione'],
+              allergeni: json['allergeni'],
+              linkFoto: json['link_foto'],
+            );
+          }).toList();
         }
       });
     }
+    // -------------------------------------------------------------------
 
     if (data['servizi'] is List) {
       final serviziDaDb = data['servizi'] as List;
@@ -120,6 +139,49 @@ class PreventivoBuilderProvider with ChangeNotifier {
       }
     }
     
+    _hydrating = false;
+    
+    // --- LOGGING ---
+    print('[DEBUG LOAD] Fine Caricamento: _preventivoId dopo set: $_preventivoId');
+    print('[DEBUG LOAD] _menu InCostruzione: ${_menu.keys.join(", ")}');
+    _menu.forEach((genere, piatti) {
+      print('[DEBUG LOAD]   - $genere: ${piatti.map((p) => p.nome).join(", ")}');
+    });
+    // -------------
+
+    notifyListeners();
+  }
+  // --- NUOVA FUNZIONE: DUPLICAZIONE DA PREVENTIVO ESISTENTE ---
+
+
+  Future<void> duplicaDaOriginale(String preventivoIdOriginale) async {
+    final doc = await FirebaseFirestore.instance.collection('preventivi').doc(preventivoIdOriginale).get();
+    
+    if (!doc.exists) {
+      throw Exception("Impossibile trovare il preventivo originale per la duplicazione.");
+    }
+    
+    final data = doc.data() as Map<String, dynamic>;
+    
+    _hydrating = true; // Inizio caricamento
+
+    // 1. Carica TUTTI i dati nel builder, passando l'ID originale solo come dato
+    caricaDaFirestoreMap(data, id: null); 
+
+    // 2. Modifiche specifiche per la COPIA
+    
+    // Aggiungiamo il suffisso al nome dell'evento
+    final baseNome = data['nome_evento'] ?? 'Nuovo Evento';
+    _nomeEvento = '$baseNome (COPIA ${DateFormat('dd/MM').format(DateTime.now())})';
+    
+    _preventivoId = null; // ESSENZIALE: Forziamo la creazione di un nuovo documento
+    _status = 'Bozza';
+    _dataCreazione = Timestamp.now().toDate(); 
+    // --- RIMOZIONE CHIAVE: NON AZZERIAMO _dataEvento (usiamo quello letto dal DB) ---
+    // _dataEvento = null; <--- RIMOZIONE
+    _acconto = null; // Resettiamo l'acconto
+    
+    _dirty = true;
     _hydrating = false;
     notifyListeners();
   }
@@ -510,7 +572,6 @@ class PreventivoBuilderProvider with ChangeNotifier {
   }
   
 
-
   void setTipoPasto(String? v) {
     if (_tipoPasto == v) return;
     _tipoPasto = v;
@@ -811,31 +872,39 @@ class PreventivoBuilderProvider with ChangeNotifier {
     _logBuilder('reset TOTAL ${total.elapsedMilliseconds}ms');
   }
 
-// In lib/providers/preventivo_builder_provider.dart -> SOSTITUISCI LA VECCHIA FUNZIONE CON QUESTA
 
-  /// Carica un preventivo esistente e lo prepara per essere salvato come nuova copia.
-  void preparaPerDuplicazione(Preventivo preventivoOriginale) {
-    // Carichiamo tutti i dati dell'originale nel nostro builder.
-    // Usiamo il metodo che già esiste per caricare i dati da una mappa.
-    caricaDaFirestoreMap(preventivoOriginale.toFirestoreMap(), id: preventivoOriginale.id);
+  Future<void> preparaPerDuplicazione(String preventivoIdOriginale) async {
+    final doc = await FirebaseFirestore.instance.collection('preventivi').doc(preventivoIdOriginale).get();
+    
+    if (!doc.exists) {
+      throw Exception("Impossibile trovare il preventivo originale per la duplicazione.");
+    }
+    
+    final data = doc.data() as Map<String, dynamic>;
+    
+    _hydrating = true; // Inizio caricamento
 
-    // --- Ora applichiamo le regole di duplicazione alle variabili corrette ---
+    // 1. Carica tutti i dati del vecchio preventivo
+    caricaDaFirestoreMap(data, id: ''); // Carica i dati ma ignora l'ID (lo impostiamo sotto)
 
-    // 1. Rimuovi l'ID per forzare la creazione di un nuovo documento.
-    _preventivoId = null;
-
-    // 2. Resetta lo stato a "Bozza".
+    // 2. Modifiche per DUPLICAZIONE: azzera stato, ID e aggiungi "Copia" al nome
+    _preventivoId = null; // ESSENZIALE: Forziamo la creazione di un nuovo documento
     _status = 'Bozza';
+    _dataCreazione = Timestamp.now().toDate();
+    _dataEvento = null; // Resettiamo la data dell'evento (meglio scegliere una nuova data)
     
-    // 3. Modifica il nome dell'evento per renderlo riconoscibile.
-    // Usiamo il setter così notifica anche i listener se necessario.
-    setNomeEvento('${preventivoOriginale.nomeEvento} (Copia)');
-    
-    // 4. Aggiorna la data di creazione alla data odierna.
-    _dataCreazione = DateTime.now();
+    // Aggiungiamo un suffisso al nome dell'evento
+    final baseNome = data['nome_evento'] ?? 'Nuovo Evento';
+    _nomeEvento = '$baseNome (COPIA ${DateFormat('dd/MM').format(DateTime.now())})';
 
-    // 5. Contrassegna il builder come "modificato" usando il metodo corretto.
-    markDirty();
-    notifyListeners();
+    // Azzeriamo i campi relativi alla conferma/firma
+    _confermaPending = false;
+    // La nostra toFirestoreMap si occuperà di salvare gli URL della firma come nulli
+    
+    _dirty = true;
+    _hydrating = false;
+    
+    // NOTA: Non è necessario notifyListeners() qui, perché la navigazione
+    // successiva ricostruirà la CreaPreventivoScreen, popolando i campi dal provider.
   }
 }

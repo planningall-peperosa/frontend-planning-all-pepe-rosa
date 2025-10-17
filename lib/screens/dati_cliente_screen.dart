@@ -302,7 +302,7 @@ class _DatiClienteScreenState extends State<DatiClienteScreen> {
   }
 
 
-Future<bool> _salvaSuFirebase({bool popOnSuccess = false}) async {
+  Future<bool> _salvaSuFirebase({bool popOnSuccess = false}) async {
     if (!_formKey.currentState!.validate()) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Compila i campi obbligatori prima di salvare.'), backgroundColor: Colors.red),
@@ -443,6 +443,8 @@ Future<bool> _salvaSuFirebase({bool popOnSuccess = false}) async {
   // =================================================
   // --- FUNZIONE PDF AGGIORNATA ---
   // =================================================
+
+
   Future<void> _salvaEGeneraPdf() async {
     if (!_validateFormOrNotify()) return;
 
@@ -456,66 +458,68 @@ Future<bool> _salvaSuFirebase({bool popOnSuccess = false}) async {
     _aggiornaBuilderDaiController();
 
     final prov = Provider.of<PreventivoBuilderProvider>(context, listen: false);
-    // Manteniamo il vecchio service solo per la generazione del PDF
     final service = PreventiviService();
 
     try {
-      // --- MODIFICA APPLICATA QUI ---
-      // Passo 1: Salva sempre prima su Firebase se ci sono modifiche, usando la nostra nuova funzione.
-      if (_hasLocalChangesDyn(prov)) {
-        // Chiamiamo la nuova funzione di salvataggio e attendiamo il risultato.
-        // popOnSuccess è false perché non vogliamo chiudere la schermata.
-        final salvataggioOk = await _salvaSuFirebase(popOnSuccess: false);
-        
-        // Se il salvataggio su Firebase fallisce, interrompiamo l'intera operazione.
-        if (!salvataggioOk) {
-          throw Exception('Salvataggio su Firebase fallito prima della generazione del PDF.');
-        }
+      // Passo 1: Salva sempre prima su Firebase se ci sono modifiche
+      final salvataggioOk = await _salvaSuFirebase(popOnSuccess: false);
+      if (!salvataggioOk) {
+        throw Exception('Salvataggio su Firebase fallito prima della generazione del PDF.');
       }
       
-      // A questo punto, siamo sicuri che i dati sono salvati e aggiornati su Firebase.
+      // Passo 2: RECUPERA L'URL DELLA FIRMA DA FIRESTORE (Logica invariata)
+      final doc = await FirebaseFirestore.instance.collection('preventivi').doc(prov.preventivoId!).get();
+      final firmaUrl = doc.data()?['firma_url'] as String?;
 
-      // Passo 2: Crea il payload nel vecchio formato, ancora richiesto dal servizio PDF.
-      // Questa parte è un "ponte" temporaneo verso il vecchio backend.
+      // Passo 3: Crea il payload e chiama il servizio Python (Logica invariata)
       final payloadCompleto = prov.creaPayloadSalvataggio();
       if (payloadCompleto == null) throw Exception('Dati incompleti per la generazione del PDF');
 
+      final Map<String, dynamic> payload = payloadCompleto['payload'] as Map<String, dynamic>;
+      payload['firma_url'] = firmaUrl;
+      
+      if (prov.preventivoId == null || prov.preventivoId!.isEmpty) {
+          throw Exception("ID Preventivo non trovato dopo il salvataggio.");
+      }
+
       final body = {
-        'preventivo_id': prov.preventivoId, // L'ID è ora disponibile anche per i nuovi preventivi dopo il primo salvataggio.
-        'payload': payloadCompleto['payload'],
+        'preventivo_id': prov.preventivoId,
+        'payload': payload,
       };
 
-      // Passo 3: Chiama il vecchio servizio Python per generare il PDF.
+      // Passo 4: Chiama il servizio Python
       final swPdf = Stopwatch()..start();
-      final bytes = await service.salvaEGeneraPdf(body);
+      final bytes = await service.salvaEGeneraPdf(body); 
       swPdf.stop();
       _logUi('service.salvaEGeneraPdf ${swPdf.elapsedMilliseconds}ms (bytes=${bytes.length})');
-
-      // Passo 4: Gestisci il file PDF generato (questa logica rimane invariata).
+      
+      // =========================================================================
+      // --- CORREZIONE CHIAVE: CHIAMATA ALLA FUNZIONE DI SALVATAGGIO DESKTOP ---
+      // =========================================================================
       if (!kIsWeb && (Platform.isMacOS || Platform.isWindows || Platform.isLinux)) {
-        await _savePdfDesktop(bytes, prov);
+          await _savePdfDesktop(bytes, prov);
       } else if (!kIsWeb && Platform.isAndroid) {
-        await _presentAndroidPdfActions(bytes, prov);
+          await _presentAndroidPdfActions(bytes, prov);
       } else if (!kIsWeb && Platform.isIOS) {
-        await Share.shareXFiles(
-          [XFile.fromData(bytes, name: _suggestedName(prov), mimeType: 'application/pdf')],
-          text: 'Preventivo',
-        );
-      } else {
-        final tmp = await getTemporaryDirectory();
-        final file = File('${tmp.path}/${_suggestedName(prov)}');
-        await file.writeAsBytes(bytes, flush: true);
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('PDF creato: ${file.path}')),
+          await Share.shareXFiles(
+            [XFile.fromData(bytes, name: _suggestedName(prov), mimeType: 'application/pdf')],
+            text: 'Preventivo',
           );
-        }
+      } else {
+          // Logica per Web/Fallback: se web, non ci sarà la finestra di dialogo
+          if(mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Generazione PDF completata.')),
+              );
+          }
       }
+      // =========================================================================
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('PDF generato con successo')),
       );
+      
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Errore: $e')));
@@ -533,30 +537,46 @@ Future<bool> _salvaSuFirebase({bool popOnSuccess = false}) async {
   }
 
   // ====================== DESKTOP SAVE (file_selector) =======================
+
+
   Future<void> _savePdfDesktop(Uint8List pdfBytes, PreventivoBuilderProvider prov) async {
-    final suggestedName = _suggestedName(prov);
+      final suggestedName = _suggestedName(prov);
+      
+      // --- AGGIUNTA LOG DI DEBUG ---
+      print('[DEBUG SAVE] Tentativo di salvare PDF desktop tramite file_selector...');
+      // ----------------------------
 
-    final home = Platform.environment['HOME'] ?? '';
-    final defaultDir =
-        home.isNotEmpty ? '$home/Documents/planning_all-pepe_rosa-PDF' : Directory.systemTemp.path;
-    try {
-      await Directory(defaultDir).create(recursive: true);
-    } catch (_) {}
+      final home = Platform.environment['HOME'] ?? '';
+      final defaultDir =
+          home.isNotEmpty ? '$home/Documents/Preventivi_PepeRosa' : Directory.systemTemp.path; // Percorso corretto
+      
+      try {
+        await Directory(defaultDir).create(recursive: true);
+      } catch (_) {}
 
-    final saveLoc = await fs.getSaveLocation(
-      suggestedName: suggestedName,
-      initialDirectory: defaultDir,
-    );
-    if (saveLoc == null) return;
+      final saveLoc = await fs.getSaveLocation(
+        suggestedName: suggestedName,
+        initialDirectory: defaultDir,
+      );
+      
+      // 1. Controlla l'annullamento: saveLoc è null se l'utente clicca 'Cancel'
+      if (saveLoc == null) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Salvataggio annullato dall\'utente.')),
+          );
+          return; 
+      }
 
-    final file = File(saveLoc.path);
-    await file.writeAsBytes(pdfBytes, flush: true);
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('PDF salvato in: ${file.path}')),
-    );
+      // 2. Salva il file nel percorso scelto
+      final file = File(saveLoc.path);
+      await file.writeAsBytes(pdfBytes, flush: true);
+      
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('PDF salvato con successo in: ${file.path}')),
+      );
   }
-
   // =================== ANDROID ACTIONS (Share / Save via SAF) ===============
   Future<void> _presentAndroidPdfActions(
     Uint8List pdfBytes,
@@ -897,6 +917,7 @@ Future<bool> _salvaSuFirebase({bool popOnSuccess = false}) async {
       }
     }
   }
+
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16.0),
