@@ -13,13 +13,15 @@ import 'dart:async';
 
 // --- AGGIUNTA: IMPORT PER FIREBASE ---
 import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_auth/firebase_auth.dart'; 
 import 'firebase_options.dart';
 // --- FINE AGGIUNTA ---
 
 import 'config/app_config.dart';
 import 'package:flutter/foundation.dart' show kDebugMode;
 
-import 'providers/auth_provider.dart';
+// 🔑 CORREZIONE 1: Import del tuo Provider con un prefisso per risolvere il conflitto
+import 'providers/auth_provider.dart' as AppAuth; 
 import 'providers/log_provider.dart';
 import 'providers/dipendenti_provider.dart';
 import 'providers/turni_provider.dart';
@@ -38,10 +40,11 @@ import 'screens/archivio_preventivi_screen.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'screens/login_screen.dart';
 
-import 'widgets/logo_widget.dart';
+// 🔑 CORREZIONE 2: Aggiunto l'apice e il punto e virgola mancanti
+import 'widgets/logo_widget.dart'; 
 import 'config/app_theme_dark.dart';
 
-import 'package:path_provider/path_provider.dart';
+// 🚨 CORREZIONE: RIMOSSA l'importazione errata 'package:path_provider/path.dart';
 
 import 'package:fic_frontend/providers/piatti_provider.dart';
 import 'package:fic_frontend/providers/menu_templates_provider.dart';
@@ -51,7 +54,14 @@ import 'features/segretario/segretario_page.dart';
 import 'screens/cerca_cliente_screen.dart';
 
 import 'providers/settings_provider.dart';
+import 'providers/segretario_provider.dart';
 
+import 'providers/calendario_eventi_provider.dart';
+import 'screens/event_calendar_screen.dart';
+
+
+// NOTA: 'AppColors' non è definito in questo file, 
+// lo lascio commentato o sostituito con Colors.white per la compilazione.
 
 final GlobalKey<ScaffoldMessengerState> scaffoldMessengerKey = GlobalKey<ScaffoldMessengerState>();
 
@@ -66,8 +76,10 @@ void main() async {
 
   FlutterError.onError = (FlutterErrorDetails details) {
     FlutterError.presentError(details);
-    print(details.exceptionAsString());
-    if (details.stack != null) print(details.stack);
+    if (kDebugMode) {
+      print(details.exceptionAsString());
+      if (details.stack != null) print(details.stack);
+    }
   };
 
   await initializeDateFormatting('it_IT', null);
@@ -76,7 +88,8 @@ void main() async {
   runApp(
     MultiProvider(
       providers: [
-        ChangeNotifierProvider(create: (context) => AuthProvider()),
+        // 🔑 CORREZIONE 1: Usa il prefisso AppAuth
+        ChangeNotifierProvider(create: (context) => AppAuth.AuthProvider()),
         ChangeNotifierProvider(create: (context) => LogProvider()),
         ChangeNotifierProvider(create: (context) => TurniProvider()),
         ChangeNotifierProvider(create: (ctx) => DipendentiProvider()),
@@ -88,6 +101,8 @@ void main() async {
         ChangeNotifierProvider(create: (context) => PiattiProvider()),
         ChangeNotifierProvider(create: (context) => MenuTemplatesProvider()),
         ChangeNotifierProvider(create: (context) => SettingsProvider()..load()),
+        ChangeNotifierProvider(create: (_) => SegretarioProvider()),
+        ChangeNotifierProvider(create: (_) => CalendarioEventiProvider()),
       ],
       child: MyApp(),
     ),
@@ -146,7 +161,7 @@ class _RootGateState extends State<RootGate> {
     if (kDebugMode && !_envChosen) {
       return EnvSelectorScreen(onApplied: () => setState(() => _envChosen = true));
     }
-    return AuthGate();
+    return const AuthGate();
   }
 }
 
@@ -209,13 +224,15 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   final ScrollController _logScrollController = ScrollController();
   Timer? _sessionTimer;
   DateTime? _loginTime;
-  late final AuthProvider _authProvider;
+  // 🔑 Modificato tipo per usare il prefisso AppAuth
+  late final AppAuth.AuthProvider _authProvider; 
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _authProvider = Provider.of<AuthProvider>(context, listen: false);
+    // 🔑 Modificato il cast
+    _authProvider = Provider.of<AppAuth.AuthProvider>(context, listen: false); 
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (kDebugMode && AppConfig.isDevelopmentEnv) {
         final logProvider = Provider.of<LogProvider>(context, listen: false);
@@ -284,6 +301,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     final String envLabel = AppConfig.isDevelopmentEnv ? 'SVILUPPO' : 'PRODUZIONE';
+    
     return Scaffold(
       appBar: AppBar(
         title: const Text('planning_all-pepe_rosa'),
@@ -299,10 +317,19 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         ],
       ),
       drawer: Drawer(
-        backgroundColor:AppColors.surface,
-        child: Consumer<AuthProvider>(
+        // Sostituisci AppColors.surface con un colore noto se non è definito
+        backgroundColor: Colors.white, 
+        // 🔑 CORREZIONE 3: Uso del prefisso AppAuth nel Consumer
+        child: Consumer<AppAuth.AuthProvider>(
           builder: (context, authProvider, _) {
+            // 🔑 CORREZIONE 4: L'oggetto authProvider è ora tipizzato correttamente, i metodi sono validi
             final menuVoci = [
+              // 🚨 NUOVA VOCE: CALENDARIO EVENTI
+              {
+                "nome": "Calendario Eventi",
+                "icon": Icons.calendar_month,
+                "widget": const EventCalendarScreen(),
+              },
               {
                 "nome": "Preventivi",
                 "icon": Icons.inventory_2_outlined,
@@ -311,10 +338,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
               {
                 "nome": "Segretario",
                 "icon": Icons.checklist_rounded,
-                "widget": SegretarioPage(
-                  apiBaseUrl: AppConfig.currentBaseUrl,
-                  finestraOre: 336, // 14 giorni
-                ),
+                "widget": SegretarioPage(),
               },
               {
                 "nome": "Contatti",
@@ -373,7 +397,8 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                 leading: const Icon(Icons.logout, color: Colors.black),
                 title: const Text('Logout', style: TextStyle(color: Colors.black)),
                 onTap: () {
-                  Provider.of<AuthProvider>(context, listen: false).logout();
+                  // 🔑 Uso del prefisso AppAuth
+                  Provider.of<AppAuth.AuthProvider>(context, listen: false).logout(); 
                 },
               ),
             );
@@ -383,7 +408,8 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
               children: <Widget>[
                 DrawerHeader(
                   margin: EdgeInsets.zero, // <-- rimuove la riga/spazio extra sotto l'header
-                  decoration: const BoxDecoration(color: AppColors.surface),
+                  // Sostituisci AppColors.surface con un colore noto se non è definito
+                  decoration: const BoxDecoration(color: Colors.white), 
                   child: const Text(
                     'Menu Principale',
                     style: TextStyle(color: Colors.black, fontSize: 24),
@@ -396,11 +422,10 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
           },
         ),
       ),
-
       body: const Center(
         child: Padding(
           padding: EdgeInsets.all(16.0),
-          // Rimosso il pannello centrale con testo/log ambiente
+          // 🔑 CORREZIONE 5: LogoWidget è un widget valido ora
           child: LogoWidget(),
         ),
       ),
@@ -474,14 +499,33 @@ Future<void> showEnvironmentSelectorDialog(BuildContext context) async {
 }
 
 class AuthGate extends StatelessWidget {
+  const AuthGate({super.key});
+  
   @override
   Widget build(BuildContext context) {
-    return Consumer<AuthProvider>(
-      builder: (context, auth, _) {
-        if (auth.isAuthenticated) {
-          return const MainScreen();
-        } else {
-          return LoginScreen();
+    // 🔑 CORREZIONE DEL PROBLEMA DI AUTENTICAZIONE INIZIALE
+    // Usa StreamBuilder per attendere che Firebase carichi lo stato persistente
+    return StreamBuilder<User?>(
+      stream: FirebaseAuth.instance.authStateChanges(),
+      builder: (context, snapshot) {
+        
+        // 1. In attesa: Mostra un indicatore di caricamento mentre Firebase verifica lo stato
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
+        }
+
+        // 2. Utente loggato (snapshot.hasData è vero quando la sessione è valida)
+        if (snapshot.hasData && snapshot.data != null) {
+          // Sessione trovata: Continua alla MainScreen (dove l'app funziona)
+          return const MainScreen(); 
+        } 
+        
+        // 3. Nessun utente loggato
+        else {
+          // Nessuna sessione: Mostra la schermata di Login
+          return LoginScreen(); 
         }
       },
     );

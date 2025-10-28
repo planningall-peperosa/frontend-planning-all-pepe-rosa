@@ -4,7 +4,8 @@ import 'package:flutter/services.dart';
 
 // Import per i Dipendenti
 import '../providers/dipendenti_provider.dart';
-import '../models/dipendente.dart';
+import '../models/cliente.dart';
+import '../providers/clienti_provider.dart';
 
 // Import per i Turni
 import '../providers/turni_provider.dart';
@@ -23,6 +24,8 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../widgets/vibration_settings_card.dart';
+
+import 'gestisci_contatto_screen.dart';
 
 class SetupScreen extends StatefulWidget {
 
@@ -56,11 +59,52 @@ class _SetupScreenState extends State<SetupScreen> {
   String? _erroreAutorizzazioni;
 
   // Generi/tipologie coerenti con i fogli Google
-  static const List<String> _generi = ['antipasto','primo','secondo','contorno','piatto_unico'];
+  static const List<String> _generi = ['antipasto','primo','secondo','contorno','portata_generica'];
   static const List<String> _tipologie = ['carne','pesce','misto','neutro'];
 
   Widget _buildPiattiSection() {
     final theme = Theme.of(context);
+
+    // Ordine e label delle categorie
+    const List<String> _ordineCategorie = [
+      'antipasto',
+      'primo',
+      'secondo',
+      'contorno',
+      'portata_generica',
+    ];
+    const Map<String, String> _labelCategorie = {
+      'antipasto': 'Antipasti',
+      'primo': 'Primi',
+      'secondo': 'Secondi',
+      'contorno': 'Contorni',
+      'portata_generica': 'Portata generica',
+    };
+
+    // Ordine stagioni (usato solo per "primo")
+    const Map<String, int> _ordineStagioni = {
+      'inverno': 0,
+      'estate': 1,
+      'evergreen': 2,
+    };
+
+    String _normCat(String? v) => (v ?? '').toLowerCase().trim();
+    String _normStag(String? v) {
+      final s = (v ?? '').toLowerCase().trim();
+      return (s.isEmpty) ? 'evergreen' : s;
+    }
+
+    String _labelStagione(String v) {
+      switch (v) {
+        case 'inverno':
+          return 'Inverno';
+        case 'estate':
+          return 'Estate';
+        default:
+          return 'Evergreen';
+      }
+    }
+
     return Card(
       color: theme.colorScheme.primary,
       elevation: 2.0,
@@ -72,13 +116,13 @@ class _SetupScreenState extends State<SetupScreen> {
         collapsedIconColor: theme.colorScheme.onPrimary,
         title: Text(
           'Gestione Piatti',
-          style: TextStyle(fontWeight: FontWeight.bold, color: theme.colorScheme.onPrimary),
+          style: TextStyle(
+            fontWeight: FontWeight.bold,
+            color: theme.colorScheme.onPrimary,
+          ),
         ),
-        // ⬇️ NUOVO: ogni volta che espandi, ricarica dal foglio
         onExpansionChanged: (expanded) {
-          if (expanded) {
-            context.read<PiattiProvider>().fetch();
-          }
+          if (expanded) context.read<PiattiProvider>().fetch();
         },
         children: [
           Container(
@@ -120,13 +164,70 @@ class _SetupScreenState extends State<SetupScreen> {
                         child: Text('Nessun piatto presente.'),
                       );
                     }
+
+                    // ---- Raggruppa per categoria; ordina: "primo" per stagione->nome, altrimenti per nome ----
+                    final List<Map<String, Object>> entries = [];
+                    for (final cat in _ordineCategorie) {
+                      final items = prov.piatti
+                          .where((p) => _normCat(p.genere) == cat)
+                          .toList();
+
+                      if (cat == 'primo') {
+                        items.sort((a, b) {
+                          final sa = _ordineStagioni[_normStag(a.stagione)] ?? 999;
+                          final sb = _ordineStagioni[_normStag(b.stagione)] ?? 999;
+                          if (sa != sb) return sa.compareTo(sb);
+                          return a.nome.toLowerCase().compareTo(b.nome.toLowerCase());
+                        });
+                      } else {
+                        items.sort((a, b) => a.nome.toLowerCase().compareTo(b.nome.toLowerCase()));
+                      }
+
+                      if (items.isEmpty) continue;
+
+                      // Header sezione
+                      entries.add({'type': 'header', 'label': _labelCategorie[cat] ?? cat});
+
+                      // Elementi della sezione
+                      for (final p in items) {
+                        entries.add({'type': 'item', 'piatto': p, 'cat': cat});
+                      }
+                    }
+
                     return ListView.separated(
                       shrinkWrap: true,
                       physics: const NeverScrollableScrollPhysics(),
-                      itemCount: prov.piatti.length,
-                      separatorBuilder: (_, __) => const Divider(height: 1),
+                      itemCount: entries.length,
+                      separatorBuilder: (_, idx) {
+                        final curr = entries[idx]['type'];
+                        final next = (idx + 1 < entries.length) ? entries[idx + 1]['type'] : null;
+                        if (curr == 'header' || next == 'header') {
+                          return const SizedBox(height: 4);
+                        }
+                        return const Divider(height: 1);
+                      },
                       itemBuilder: (_, i) {
-                        final p = prov.piatti[i];
+                        final e = entries[i];
+                        if (e['type'] == 'header') {
+                          final label = e['label'] as String? ?? '';
+                          return Container(
+                            color: theme.colorScheme.surfaceVariant,
+                            padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
+                            child: Text(
+                              label,
+                              style: theme.textTheme.titleMedium?.copyWith(
+                                fontWeight: FontWeight.w700,
+                                color: theme.colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                          );
+                        }
+
+                        // item piatto
+                        final p = e['piatto'] as Piatto;
+                        final cat = (e['cat'] as String?) ?? '';
+                        final bool isPrimo = cat == 'primo';
+
                         return Dismissible(
                           key: ValueKey(p.idUnico),
                           direction: DismissDirection.endToStart,
@@ -160,13 +261,26 @@ class _SetupScreenState extends State<SetupScreen> {
                             final ok = await context.read<PiattiProvider>().remove(p.idUnico);
                             if (!ok) {
                               final err = context.read<PiattiProvider>().error ?? 'Errore eliminazione piatto';
-                              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+                              if (mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+                              }
                             }
                             return ok;
                           },
                           child: ListTile(
                             title: Text(p.nome),
                             subtitle: Text('${p.genere} • ${p.tipologia}'),
+                            // Stagione SOLO per i "primi"
+                            trailing: isPrimo
+                                ? Text(
+                                    _labelStagione(_normStag(p.stagione)),
+                                    textAlign: TextAlign.right,
+                                    style: theme.textTheme.bodyMedium?.copyWith(
+                                      color: theme.colorScheme.onSurface.withOpacity(0.7),
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  )
+                                : null,
                             onTap: () => _openPiattoDialog(edit: p),
                           ),
                         );
@@ -190,7 +304,7 @@ class _SetupScreenState extends State<SetupScreen> {
     String tipologia = edit?.tipologia ?? _tipologie.first;
     final nomeCtrl  = TextEditingController(text: edit?.nome ?? '');
     final descrCtrl = TextEditingController(text: edit?.descrizione ?? '');
-    final allergCtrl= TextEditingController(text: edit?.allergeni ?? '');
+    final allergCtrl= TextEditingController(text: edit?.stagione ?? '');
     final fotoCtrl  = TextEditingController(text: edit?.linkFoto ?? '');
     // Il controller del prezzo è stato RIMOSSO
 
@@ -211,7 +325,7 @@ class _SetupScreenState extends State<SetupScreen> {
               'genere': genere,
               'nome': nomeCtrl.text.trim(),
               'descrizione': descrCtrl.text.trim(),
-              'allergeni': allergCtrl.text.trim(),
+              'stagione': allergCtrl.text.trim(),
               'link_foto_piatto': fotoCtrl.text.trim(), // <-- CORRETTO
               'tipologia': tipologia,
               // Il campo 'prezzo' è stato RIMOSSO
@@ -306,7 +420,7 @@ class _SetupScreenState extends State<SetupScreen> {
                     const SizedBox(height: 8),
                     TextFormField(controller: descrCtrl, decoration: const InputDecoration(labelText: 'Descrizione'), maxLines: 3),
                     const SizedBox(height: 8),
-                    TextFormField(controller: allergCtrl, decoration: const InputDecoration(labelText: 'Allergeni')),
+                    TextFormField(controller: allergCtrl, decoration: const InputDecoration(labelText: 'Stagione')),
                     const SizedBox(height: 8),
                     TextFormField(controller: fotoCtrl, decoration: const InputDecoration(labelText: 'Link foto')),
                   ]),
@@ -344,7 +458,7 @@ class _SetupScreenState extends State<SetupScreen> {
           'Gestione Menu',
           style: TextStyle(fontWeight: FontWeight.bold, color: theme.colorScheme.onPrimary),
         ),
-        // ⬇️ NUOVO: quando espandi, ricarica sia menu che piatti (per il picker)
+        // quando espandi, ricarica sia menu che piatti (per il picker)
         onExpansionChanged: (expanded) {
           if (expanded) {
             final menuProv = context.read<MenuTemplatesProvider>();
@@ -391,13 +505,22 @@ class _SetupScreenState extends State<SetupScreen> {
                         child: Text('Nessun menu presente.'),
                       );
                     }
+
+                    // ✅ ORDINE PER PREZZO CRESCENTE (tie-break: nome alfabetico)
+                    final templates = [...menuProv.templates]
+                      ..sort((a, b) {
+                        final byPrice = a.prezzo.compareTo(b.prezzo);
+                        if (byPrice != 0) return byPrice;
+                        return a.nomeMenu.toLowerCase().compareTo(b.nomeMenu.toLowerCase());
+                      });
+
                     return ListView.separated(
                       shrinkWrap: true,
                       physics: const NeverScrollableScrollPhysics(),
-                      itemCount: menuProv.templates.length,
+                      itemCount: templates.length,
                       separatorBuilder: (_, __) => const Divider(height: 1),
                       itemBuilder: (_, i) {
-                        final m = menuProv.templates[i];
+                        final m = templates[i];
                         return Dismissible(
                           key: ValueKey(m.idMenu),
                           direction: DismissDirection.endToStart,
@@ -425,7 +548,9 @@ class _SetupScreenState extends State<SetupScreen> {
                             final ok = await context.read<MenuTemplatesProvider>().remove(m.idMenu);
                             if (!ok) {
                               final err = context.read<MenuTemplatesProvider>().error ?? 'Errore eliminazione menu';
-                              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+                              if (mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+                              }
                             }
                             return ok;
                           },
@@ -448,19 +573,145 @@ class _SetupScreenState extends State<SetupScreen> {
   }
 
 
+  Future<void> _openSelettorePiatti({
+    required String categoria,                 // "antipasto" | "primo" | "secondo" | "contorno" | "portata_generica"
+    required List<Piatto> candidati,           // lista filtrata per categoria
+    required Set<String> giaPresentiIds,       // id già nel menu (NON contati)
+    required void Function(List<Piatto>) onConferma, // callback con SOLO i nuovi selezionati
+  }) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (ctx) {
+        // stato locale, azzerato ad ogni apertura
+        final Set<String> selectedIds = <String>{};
+
+        return StatefulBuilder(
+          builder: (ctx, setState) {
+            final items = [...candidati]
+              ..sort((a, b) => a.nome.toLowerCase().compareTo(b.nome.toLowerCase()));
+
+            return Material(
+              color: Theme.of(context).colorScheme.surface,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const SizedBox(height: 8),
+                  Container(
+                    width: 48, height: 4,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(999),
+                      color: Colors.black26,
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
+                    child: Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text('Seleziona $categoria', style: Theme.of(context).textTheme.titleMedium),
+                    ),
+                  ),
+                  const Divider(height: 1),
+
+                  Expanded(
+                    child: ListView.separated(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      itemCount: items.length,
+                      separatorBuilder: (_, __) => const Divider(height: 1),
+                      itemBuilder: (_, i) {
+                        final p = items[i];
+                        final alreadyInMenu = giaPresentiIds.contains(p.idUnico);
+                        final checked = selectedIds.contains(p.idUnico);
+
+                        return ListTile(
+                          title: Text(p.nome),
+                          subtitle: Text(p.tipologia),
+                          trailing: alreadyInMenu
+                              ? const Icon(Icons.check, color: Colors.green) // già incluso, non selezionabile
+                              : Checkbox(
+                                  value: checked,
+                                  onChanged: (v) {
+                                    setState(() {
+                                      if (v == true) {
+                                        selectedIds.add(p.idUnico);
+                                      } else {
+                                        selectedIds.remove(p.idUnico);
+                                      }
+                                    });
+                                  },
+                                ),
+                          onTap: alreadyInMenu
+                              ? null
+                              : () {
+                                  setState(() {
+                                    if (checked) {
+                                      selectedIds.remove(p.idUnico);
+                                    } else {
+                                      selectedIds.add(p.idUnico);
+                                    }
+                                  });
+                                },
+                        );
+                      },
+                    ),
+                  ),
+
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton(
+                            onPressed: () => Navigator.pop(ctx),
+                            child: const Text('Annulla'),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: ElevatedButton(
+                            onPressed: selectedIds.isEmpty
+                                ? null
+                                : () {
+                                    final nuovi = items.where((p) => selectedIds.contains(p.idUnico)).toList();
+                                    Navigator.pop(ctx);
+                                    onConferma(nuovi);
+                                  },
+                            child: Text('Aggiungi (${selectedIds.length})'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+
+
   Future<void> _openMenuDialog({MenuTemplate? edit}) async {
     final menuProv = context.read<MenuTemplatesProvider>();
     final piattiProv = context.read<PiattiProvider>();
 
     final formKey = GlobalKey<FormState>();
-    final nomeCtrl = TextEditingController(text: edit?.nomeMenu ?? '');
+    final nomeCtrl = TextEditingController(
+      text: edit?.nomeMenu ?? '',
+    );
     final prezzoCtrl = TextEditingController(
-        text: edit != null ? edit.prezzo.toStringAsFixed(2).replaceAll('.', ',') : '');
+      text: edit != null ? edit.prezzo.toStringAsFixed(2).replaceAll('.', ',') : '',
+    );
     final prezzoBambinoCtrl = TextEditingController(
-        text: edit != null ? edit.prezzoBambino.toStringAsFixed(2).replaceAll('.', ',') : '0,00');
+      text: edit != null ? edit.prezzoBambino.toStringAsFixed(2).replaceAll('.', ',') : '0,00',
+    );
 
     String tipologia = edit?.tipologia ?? _tipologie.first;
 
+    // Mantieni l'ordine esistente delle portate
     final Map<String, List<String>> composizione = {
       for (final g in _generi) g: List<String>.from(edit?.composizioneDefault[g] ?? []),
     };
@@ -478,7 +729,8 @@ class _SetupScreenState extends State<SetupScreen> {
             setStateDialog(() => saving = true);
 
             final prezzo = double.tryParse(prezzoCtrl.text.replaceAll(',', '.')) ?? 0.0;
-            final prezzoBambino = double.tryParse(prezzoBambinoCtrl.text.replaceAll(',', '.')) ?? 0.0;
+            final prezzoBambino =
+                double.tryParse(prezzoBambinoCtrl.text.replaceAll(',', '.')) ?? 0.0;
 
             final payload = {
               'nome_menu': nomeCtrl.text.trim(),
@@ -501,22 +753,25 @@ class _SetupScreenState extends State<SetupScreen> {
                 SnackBar(content: Text(edit == null ? 'Menu creato' : 'Menu aggiornato')),
               );
             } else {
-              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
                   content: Text(menuProv.error ?? 'Operazione non riuscita'),
-                  backgroundColor: Colors.red));
+                  backgroundColor: Colors.red,
+                ),
+              );
             }
           }
 
           Future<void> _doDelete() async {
-            // Assicurati di essere in modalità modifica
             if (edit == null) return;
 
-            // Chiedi conferma all'utente
             final conferma = await showDialog<bool>(
-              context: ctx, // Usa il contesto del dialog
+              context: ctx,
               builder: (dctx) => AlertDialog(
                 title: const Text('Eliminare il menu?'),
-                content: Text('Stai per eliminare "${edit.nomeMenu}". L\'operazione non può essere annullata.'),
+                content: Text(
+                  'Stai per eliminare "${edit.nomeMenu}". L\'operazione non può essere annullata.',
+                ),
                 actions: [
                   TextButton(onPressed: () => Navigator.pop(dctx, false), child: const Text('Annulla')),
                   ElevatedButton(onPressed: () => Navigator.pop(dctx, true), child: const Text('Elimina')),
@@ -524,25 +779,25 @@ class _SetupScreenState extends State<SetupScreen> {
               ),
             );
 
-            // Se l'utente non conferma, interrompi
             if (conferma != true) return;
 
-            // Mostra lo spinner e chiama il provider
             setStateDialog(() => deleting = true);
-            final ok = await menuProv.remove(edit.idMenu); // Usa l'ID corretto
+            final ok = await menuProv.remove(edit.idMenu);
             if (!ctx.mounted) return;
             setStateDialog(() => deleting = false);
 
-            // Gestisci il risultato
             if (ok) {
-              Navigator.pop(ctx); // Chiudi la finestra di modifica
-              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Menu eliminato')));
-            } else {
+              Navigator.pop(ctx);
               ScaffoldMessenger.of(context)
-                  .showSnackBar(SnackBar(content: Text(menuProv.error ?? 'Eliminazione fallita')));
+                  .showSnackBar(const SnackBar(content: Text('Menu eliminato')));
+            } else {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text(menuProv.error ?? 'Eliminazione fallita')),
+              );
             }
-          }          
-          // --- QUESTA È LA PARTE UI COMPLETA ---
+          }
+
+          // --- UI ---
           return AbsorbPointer(
             absorbing: saving || deleting,
             child: AlertDialog(
@@ -557,85 +812,171 @@ class _SetupScreenState extends State<SetupScreen> {
                 ],
               ),
               contentPadding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-              content: SingleChildScrollView(
-                child: Form(
-                  key: formKey,
-                  child: Column(mainAxisSize: MainAxisSize.min, children: [
-                    TextFormField(
-                      controller: nomeCtrl,
-                      decoration: const InputDecoration(labelText: 'Nome menu'),
-                      validator: (v) => (v == null || v.trim().isEmpty) ? 'Richiesto' : null,
+              content: SizedBox( // evita RenderBox senza size
+                width: double.maxFinite,
+                child: SingleChildScrollView(
+                  child: Form(
+                    key: formKey,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        // Campi principali
+                        TextFormField(
+                          controller: nomeCtrl,
+                          decoration: const InputDecoration(labelText: 'Nome menu'),
+                          validator: (v) => (v == null || v.trim().isEmpty) ? 'Richiesto' : null,
+                        ),
+                        const SizedBox(height: 8),
+                        TextFormField(
+                          controller: prezzoCtrl,
+                          decoration: const InputDecoration(labelText: 'Prezzo Adulto (€)'),
+                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                          validator: (v) {
+                            final d = double.tryParse((v ?? '').replaceAll(',', '.')) ?? 0;
+                            return d > 0 ? null : 'Prezzo non valido';
+                          },
+                        ),
+                        const SizedBox(height: 8),
+                        TextFormField(
+                          controller: prezzoBambinoCtrl,
+                          decoration: const InputDecoration(labelText: 'Prezzo Bambino (€)'),
+                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                        ),
+                        const SizedBox(height: 8),
+                        DropdownButtonFormField<String>(
+                          value: tipologia,
+                          items: _tipologie
+                              .map((t) => DropdownMenuItem(value: t, child: Text(t)))
+                              .toList(),
+                          onChanged: (v) => tipologia = v!,
+                          decoration: const InputDecoration(labelText: 'Tipologia'),
+                        ),
+                        const SizedBox(height: 12),
+
+                        // Sezioni per genere/portata
+                        ..._generi.map((g) {
+                          final selectedIds = composizione[g]!;
+
+                          // mappa id -> piatto per ricostruire la lista nell’ordine scelto
+                          final byId = {for (final p in piattiProv.piatti) p.idUnico: p};
+                          final selectedPiatti = <Piatto>[
+                            for (final id in selectedIds)
+                              if (byId[id] != null) byId[id]!,
+                          ];
+
+                          return Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      g.toUpperCase(),
+                                      style: Theme.of(ctx).textTheme.titleMedium,
+                                    ),
+                                  ),
+                                  TextButton.icon(
+                                    icon: const Icon(Icons.add),
+                                    label: const Text('Seleziona'),
+                                    onPressed: () async {
+                                      final picked = await _pickPiatti(
+                                        genere: g,
+                                        preselected: selectedIds,
+                                      );
+                                      if (picked != null) {
+                                        setStateDialog(() {
+                                          // merge: preserva ordine esistente, aggiunge in coda i nuovi
+                                          final current = composizione[g]!;
+                                          final seen = current.toSet();
+                                          for (final id in picked) {
+                                            if (!seen.contains(id)) {
+                                              current.add(id);
+                                              seen.add(id);
+                                            }
+                                          }
+                                          // per rimuovere i deselezionati nel picker, decommenta:
+                                          // current.removeWhere((id) => !picked.contains(id));
+                                        });
+                                      }
+                                    },
+                                  ),
+                                ],
+                              ),
+
+                              // Messaggio vuoto o lista riordinabile
+                              selectedPiatti.isEmpty
+                                  ? Padding(
+                                      padding: const EdgeInsets.only(bottom: 8),
+                                      child: Text(
+                                        'Nessun $g selezionato',
+                                        style: TextStyle(
+                                          color: Theme.of(ctx).hintColor,
+                                          fontStyle: FontStyle.italic,
+                                        ),
+                                      ),
+                                    )
+                                  : ReorderableListView(
+                                      key: ValueKey('reorder_$g'),
+                                      shrinkWrap: true,
+                                      physics: const NeverScrollableScrollPhysics(),
+                                      buildDefaultDragHandles: false, // niente handle automatico
+                                      onReorder: (oldIndex, newIndex) {
+                                        setStateDialog(() {
+                                          if (newIndex > oldIndex) newIndex--;
+                                          final item = selectedPiatti.removeAt(oldIndex);
+                                          selectedPiatti.insert(newIndex, item);
+                                          composizione[g]!
+                                            ..clear()
+                                            ..addAll(selectedPiatti.map((p) => p.idUnico));
+                                        });
+                                      },
+                                      children: [
+                                        for (final entry in selectedPiatti.asMap().entries)
+                                          // 👉 drag immediato da QUALSIASI punto della riga
+                                          ReorderableDragStartListener(
+                                            key: ValueKey(entry.value.idUnico),
+                                            index: entry.key,
+                                            child: ListTile(
+                                              contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                                              title: Text(entry.value.nome),
+                                              // layout comodo: drag ovunque, maniglia visiva + cestino cliccabile
+                                              trailing: Row(
+                                                mainAxisSize: MainAxisSize.min,
+                                                children: [
+                                                  IconButton(
+                                                    tooltip: 'Rimuovi',
+                                                    icon: const Icon(Icons.close),
+                                                    onPressed: () => setStateDialog(
+                                                      () => composizione[g]!.remove(entry.value.idUnico),
+                                                    ),
+                                                  ),
+                                                  const SizedBox(width: 4),
+                                                  const Icon(Icons.drag_handle), // solo indicatore visivo
+                                                ],
+                                              ),
+                                            ),
+                                          ),
+                                      ],
+                                    ),
+                              const Divider(),
+                            ],
+                          );
+                        }),
+                      ],
                     ),
-                    const SizedBox(height: 8),
-                    TextFormField(
-                      controller: prezzoCtrl,
-                      decoration: const InputDecoration(labelText: 'Prezzo Adulto (€)'),
-                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                      validator: (v) {
-                        final d = double.tryParse((v ?? '').replaceAll(',', '.')) ?? 0;
-                        return d > 0 ? null : 'Prezzo non valido';
-                      },
-                    ),
-                    const SizedBox(height: 8),
-                    TextFormField(
-                      controller: prezzoBambinoCtrl,
-                      decoration: const InputDecoration(labelText: 'Prezzo Bambino (€)'),
-                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                    ),
-                    const SizedBox(height: 8),
-                    DropdownButtonFormField<String>(
-                      value: tipologia,
-                      items: _tipologie.map((t) => DropdownMenuItem(value: t, child: Text(t))).toList(),
-                      onChanged: (v) => tipologia = v!,
-                      decoration: const InputDecoration(labelText: 'Tipologia'),
-                    ),
-                    const SizedBox(height: 12),
-                    ..._generi.map((g) {
-                      final selectedIds = composizione[g]!;
-                      final selectedPiatti = piattiProv.piatti.where((p) => selectedIds.contains(p.idUnico)).toList();
-                      return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-                        Row(children: [
-                          Expanded(child: Text(g.toUpperCase(), style: Theme.of(ctx).textTheme.titleMedium)),
-                          TextButton.icon(
-                            icon: const Icon(Icons.add),
-                            label: const Text('Seleziona'),
-                            onPressed: () async {
-                              final picked = await _pickPiatti(genere: g, preselected: selectedIds);
-                              if (picked != null) {
-                                setStateDialog(() {
-                                  composizione[g]!..clear()..addAll(picked);
-                                });
-                              }
-                            },
-                          ),
-                        ]),
-                        if (selectedPiatti.isEmpty)
-                          Padding(
-                            padding: const EdgeInsets.only(bottom: 8),
-                            child: Text('Nessun $g selezionato',
-                                style: TextStyle(color: Theme.of(ctx).hintColor, fontStyle: FontStyle.italic)),
-                          )
-                        else
-                          Wrap(
-                            spacing: 6,
-                            runSpacing: -6,
-                            children: selectedPiatti.map((p) => Chip(
-                                    label: Text(p.nome),
-                                    onDeleted: () => setStateDialog(() => composizione[g]!.remove(p.idUnico)),
-                                  )).toList(),
-                          ),
-                        const Divider(),
-                      ]);
-                    }),
-                  ]),
+                  ),
                 ),
               ),
               actions: [
-                TextButton(onPressed: saving || deleting ? null : () => Navigator.pop(ctx), child: const Text('Annulla')),
+                TextButton(
+                  onPressed: saving || deleting ? null : () => Navigator.pop(ctx),
+                  child: const Text('Annulla'),
+                ),
                 ElevatedButton(
                   onPressed: saving || deleting ? null : _doSave,
                   child: saving
-                      ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                      ? const SizedBox(
+                          width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
                       : Text(edit == null ? 'Crea' : 'Salva'),
                 ),
               ],
@@ -650,8 +991,46 @@ class _SetupScreenState extends State<SetupScreen> {
     required String genere,
     required List<String> preselected,
   }) async {
-    final piatti = context.read<PiattiProvider>().piatti.where((p) => p.genere == genere).toList();
-    final sel = preselected.toSet();
+    // 1) Piatti per genere, ordinati alfabeticamente
+    final piatti = context
+        .read<PiattiProvider>()
+        .piatti
+        .where((p) => p.genere == genere)
+        .toList()
+      ..sort((a, b) => a.nome.toLowerCase().compareTo(b.nome.toLowerCase()));
+
+    // 2) Già presenti nel menu (non selezionabili qui)
+    final Set<String> already = preselected.toSet();
+
+    // 3) Selezioni fatte ORA in questo picker
+    final Set<String> newly = <String>{};
+
+    // helper: normalizza stagione
+    String _normStag(String? v) => (v ?? 'evergreen').toLowerCase().trim();
+
+    // helper: icona stagione con colore
+    Widget _stagioneIcon(String? stagione) {
+      final s = _normStag(stagione);
+      if (s == 'inverno') {
+        return const Tooltip(
+          message: 'Inverno',
+          child: Icon(Icons.ac_unit, size: 18, color: Colors.lightBlue),
+        );
+      } else if (s == 'estate') {
+        return const Tooltip(
+          message: 'Estate',
+          child: Icon(Icons.wb_sunny, size: 18, color: Colors.amber),
+        );
+      } else {
+        // evergreen
+        return const Tooltip(
+          message: 'Evergreen',
+          child: Icon(Icons.eco, size: 18, color: Colors.green),
+        );
+      }
+    }
+
+    final bool isPrimo = genere.toLowerCase().trim() == 'primo';
 
     return showModalBottomSheet<List<String>>(
       context: context,
@@ -661,61 +1040,131 @@ class _SetupScreenState extends State<SetupScreen> {
       ),
       builder: (_) {
         return DraggableScrollableSheet(
-          expand: false, initialChildSize: 0.85,
-          builder: (ctx, controller) => Column(
-            children: [
-              const SizedBox(height: 8),
-              Container(width: 48, height: 5,
-                decoration: BoxDecoration(color: Colors.grey.shade500, borderRadius: BorderRadius.circular(999))),
-              const SizedBox(height: 12),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text('Seleziona $genere', style: Theme.of(ctx).textTheme.titleLarge),
-                ),
-              ),
-              const SizedBox(height: 8),
-              Expanded(
-                child: ListView.separated(
-                  controller: controller,
-                  itemCount: piatti.length,
-                  separatorBuilder: (_, __) => const Divider(height: 1),
-                  itemBuilder: (_, i) {
-                    final p = piatti[i];
-                    final selected = sel.contains(p.idUnico);
-                    return ListTile(
-                      title: Text(p.nome),
-                      subtitle: Text(p.tipologia),
-                      trailing: Checkbox(value: selected, onChanged: (_) {
-                        selected ? sel.remove(p.idUnico) : sel.add(p.idUnico);
-                        (ctx as Element).markNeedsBuild();
-                      }),
-                      onTap: () {
-                        selected ? sel.remove(p.idUnico) : sel.add(p.idUnico);
-                        (ctx as Element).markNeedsBuild();
-                      },
-                    );
-                  },
-                ),
-              ),
-              SafeArea(
-                top: false,
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
-                  child: Row(children: [
-                    Expanded(child: OutlinedButton(onPressed: ()=>Navigator.pop(ctx, null), child: const Text('Annulla'))),
-                    const SizedBox(width: 12),
-                    Expanded(child: ElevatedButton(onPressed: ()=>Navigator.pop(ctx, sel.toList()), child: Text('Aggiungi (${sel.length})'))),
-                  ]),
-                ),
-              ),
-            ],
-          ),
+          expand: false,
+          initialChildSize: 0.85,
+          builder: (sheetCtx, controller) {
+            return StatefulBuilder(
+              builder: (ctx, setState) {
+                final baseTextStyle = DefaultTextStyle.of(ctx).style;
+
+                return Column(
+                  children: [
+                    const SizedBox(height: 8),
+                    Container(
+                      width: 48,
+                      height: 5,
+                      decoration: BoxDecoration(
+                        color: Colors.grey.shade500,
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                    ),
+                  const SizedBox(height: 12),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          'Seleziona $genere',
+                          style: Theme.of(ctx).textTheme.titleLarge,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Expanded(
+                      child: ListView.separated(
+                        controller: controller,
+                        itemCount: piatti.length,
+                        separatorBuilder: (_, __) => const Divider(height: 1),
+                        itemBuilder: (_, i) {
+                          final p = piatti[i];
+                          final id = p.idUnico;
+                          final isAlready = already.contains(id);
+                          final isChecked = newly.contains(id);
+
+                          return ListTile(
+                            // 🔹 Nome + icona stagione subito dopo il nome (solo per PRIMI)
+                            title: isPrimo
+                                ? RichText(
+                                    text: TextSpan(
+                                      style: baseTextStyle,
+                                      children: [
+                                        TextSpan(text: p.nome),
+                                        const TextSpan(text: ' '),
+                                        WidgetSpan(
+                                          alignment: PlaceholderAlignment.middle,
+                                          child: _stagioneIcon(p.stagione),
+                                        ),
+                                      ],
+                                    ),
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                  )
+                                : Text(p.nome),
+                            subtitle: Text(p.tipologia),
+                            trailing: isAlready
+                                ? const Icon(Icons.check, color: Colors.green)
+                                : Checkbox(
+                                    value: isChecked,
+                                    onChanged: (v) {
+                                      setState(() {
+                                        if (v == true) {
+                                          newly.add(id);
+                                        } else {
+                                          newly.remove(id);
+                                        }
+                                      });
+                                    },
+                                  ),
+                            onTap: isAlready
+                                ? null
+                                : () {
+                                    setState(() {
+                                      if (isChecked) {
+                                        newly.remove(id);
+                                      } else {
+                                        newly.add(id);
+                                      }
+                                    });
+                                  },
+                          );
+                        },
+                      ),
+                    ),
+                    SafeArea(
+                      top: false,
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: OutlinedButton(
+                                onPressed: () => Navigator.pop(ctx, null),
+                                child: const Text('Annulla'),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: ElevatedButton(
+                                onPressed: newly.isEmpty
+                                    ? null
+                                    : () => Navigator.pop(ctx, newly.toList()),
+                                child: Text('Aggiungi (${newly.length})'),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                );
+              },
+            );
+          },
         );
       },
     );
   }
+
 
 
 
@@ -728,15 +1177,15 @@ class _SetupScreenState extends State<SetupScreen> {
     });
   }
 
-
-
-
-  // Funzione unica per aggiornare tutti i dati
   Future<void> _refreshData() async {
     await Future.wait([
-      Provider.of<DipendentiProvider>(context, listen: false).fetchDipendenti(),
+      // Assicurati che questi provider legacy siano ancora necessari e funzionanti
+      Provider.of<DipendentiProvider>(context, listen: false).fetchDipendenti(), // 🚨 NUOVO: CARICAMENTO DIPENDENTI DA FIRESTORE
       Provider.of<TurniProvider>(context, listen: false).fetchTipiTurno(),
-      // NEW
+
+      // Già refattorizzato
+      Provider.of<ClientiProvider>(context, listen: false).fetchAllContacts(force: true),
+
       Provider.of<PiattiProvider>(context, listen: false).fetch(),
       Provider.of<MenuTemplatesProvider>(context, listen: false).fetch(),
     ]);
@@ -864,7 +1313,7 @@ class _SetupScreenState extends State<SetupScreen> {
         ],
       ),
     );
-  }
+  }   
 
   Widget _buildDipendentiSection() {
     final theme = Theme.of(context);
@@ -878,6 +1327,12 @@ class _SetupScreenState extends State<SetupScreen> {
         iconColor: theme.colorScheme.onPrimary,
         collapsedIconColor: theme.colorScheme.onPrimary,
         title: Text('Gestione Dipendenti', style: TextStyle(fontWeight: FontWeight.bold, color: theme.colorScheme.onPrimary)),
+        // ⬇️ NUOVO: Aggiungi fetch per caricare da Firestore
+        onExpansionChanged: (expanded) {
+          if (expanded) {
+            context.read<DipendentiProvider>().fetchDipendenti();
+          }
+        },
         children: [
           Container(
             color: theme.colorScheme.background,
@@ -911,7 +1366,9 @@ class _SetupScreenState extends State<SetupScreen> {
                       itemCount: provider.dipendenti.length,
                       itemBuilder: (ctx, index) {
                         return DipendenteItem(
-                          key: ValueKey(provider.dipendenti[index].idUnico),
+                          // 🚨 Modifica: DipendenteItem ora usa Cliente.idUnico è stato mappato su idCliente
+                          key: ValueKey(provider.dipendenti[index].idCliente),
+                          // 🚨 Modifica: Ora passa l'oggetto Cliente
                           dipendente: provider.dipendenti[index],
                         );
                       },
@@ -927,51 +1384,76 @@ class _SetupScreenState extends State<SetupScreen> {
   }
 
 
+
   void _mostraDialogAggiungiDipendente() {
     final _formKey = GlobalKey<FormState>();
     final Map<String, String> _newData = {};
     final theme = Theme.of(context);
     final textStyle = TextStyle(color: theme.colorScheme.onSurface);
+    
+    // Per gestire il risultato asincrono del salvataggio
+    bool _isSaving = false;
 
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text('Aggiungi Dipendente'),
-        content: Form(
-          key: _formKey,
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextFormField(decoration: InputDecoration(labelText: 'Nome Dipendente'), style: textStyle, validator: (v) => v!.isEmpty ? 'Campo obbligatorio' : null, onSaved: (v) => _newData['nome_dipendente'] = v!,),
-                TextFormField(decoration: InputDecoration(labelText: 'Ruolo'), style: textStyle, validator: (v) => v!.isEmpty ? 'Campo obbligatorio' : null, onSaved: (v) => _newData['ruolo'] = v!,),
-                TextFormField(decoration: InputDecoration(labelText: 'PIN'), style: textStyle, keyboardType: TextInputType.number, validator: (v) => v!.isEmpty ? 'Campo obbligatorio' : null, onSaved: (v) => _newData['pin'] = v!,),
-                TextFormField(decoration: InputDecoration(labelText: 'Email'), style: textStyle, keyboardType: TextInputType.emailAddress, onSaved: (v) => _newData['email'] = v ?? '',),
-                TextFormField(decoration: InputDecoration(labelText: 'Telefono'), style: textStyle, keyboardType: TextInputType.phone, onSaved: (v) => _newData['telefono'] = v ?? '',),
-                TextFormField(decoration: InputDecoration(labelText: 'Colore (es. #FF0000)'), style: textStyle, onSaved: (v) => _newData['colore'] = v ?? '',),
-                for (int i = 1; i <= 10; i++)
-                  TextFormField(decoration: InputDecoration(labelText: 'Campo Extra ${i.toString().padLeft(2, '0')}'), style: textStyle, onSaved: (v) => _newData['campo_extra_${i.toString().padLeft(2, '0')}'] = v ?? '',),
-              ],
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setStateDialog) {
+          return AlertDialog(
+            title: const Text('Aggiungi Dipendente'),
+            content: Form(
+              key: _formKey,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // Nome Dipendente (mappato su ragione_sociale)
+                    TextFormField(decoration: const InputDecoration(labelText: 'Nome Dipendente'), style: textStyle, validator: (v) => v!.isEmpty ? 'Campo obbligatorio' : null, onSaved: (v) => _newData['nome_dipendente'] = v!,),
+                    // Ruolo
+                    TextFormField(decoration: const InputDecoration(labelText: 'Ruolo'), style: textStyle, validator: (v) => v!.isEmpty ? 'Campo obbligatorio' : null, onSaved: (v) => _newData['ruolo'] = v!,),
+                    // PIN (RIMOSSO)
+                    // Email
+                    TextFormField(decoration: const InputDecoration(labelText: 'Email'), style: textStyle, keyboardType: TextInputType.emailAddress, onSaved: (v) => _newData['email'] = v ?? '',),
+                    // Telefono
+                    TextFormField(decoration: const InputDecoration(labelText: 'Telefono'), style: textStyle, keyboardType: TextInputType.phone, onSaved: (v) => _newData['telefono'] = v ?? '',),
+                    // Colore
+                    TextFormField(decoration: const InputDecoration(labelText: 'Colore (es. #FF0000)'), style: textStyle, onSaved: (v) => _newData['colore'] = v ?? '',),
+                    // CAMPI EXTRA RIMOSSI
+                  ],
+                ),
+              ),
             ),
-          ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.of(ctx).pop(), child: Text('Annulla')),
-          ElevatedButton(
-            child: Text('Salva'),
-            onPressed: () {
-              if (_formKey.currentState!.validate()) {
-                _formKey.currentState!.save();
-                Provider.of<DipendentiProvider>(context, listen: false).addDipendente(_newData);
-                Navigator.of(ctx).pop();
-              }
-            },
-          ),
-        ],
+            actions: [
+              TextButton(onPressed: _isSaving ? null : () => Navigator.of(ctx).pop(), child: const Text('Annulla')),
+              ElevatedButton(
+                child: _isSaving
+                    ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Text('Salva'),
+                onPressed: _isSaving ? null : () async {
+                  if (_formKey.currentState!.validate()) {
+                    _formKey.currentState!.save();
+                    setStateDialog(() => _isSaving = true);
+                    
+                    final success = await Provider.of<DipendentiProvider>(context, listen: false).addDipendente(_newData);
+                    
+                    if (ctx.mounted) {
+                      setStateDialog(() => _isSaving = false);
+                      if (success) {
+                        Navigator.of(ctx).pop();
+                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Dipendente aggiunto!'), backgroundColor: Colors.green));
+                      } else {
+                        final error = Provider.of<DipendentiProvider>(context, listen: false).error ?? 'Errore aggiunta dipendente.';
+                        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error), backgroundColor: Colors.red));
+                      }
+                    }
+                  }
+                },
+              ),
+            ],
+          );
+        }
       ),
     );
   }
-
   
   void _confermaEliminazioneDipendente(String id) {
     final theme = Theme.of(context);
@@ -1013,6 +1495,12 @@ class _SetupScreenState extends State<SetupScreen> {
         iconColor: theme.colorScheme.onPrimary,
         collapsedIconColor: theme.colorScheme.onPrimary,
         title: Text('Gestione Turno', style: TextStyle(fontWeight: FontWeight.bold, color: theme.colorScheme.onPrimary)),
+        // 🚨 MODIFICA: Forzare il fetch all'espansione da Firestore
+        onExpansionChanged: (expanded) {
+          if (expanded) {
+            context.read<TurniProvider>().fetchTipiTurno();
+          }
+        },
         children: [
           Container(
             color: theme.colorScheme.background,
@@ -1061,44 +1549,70 @@ class _SetupScreenState extends State<SetupScreen> {
     );
   }
 
+
+
   void _mostraDialogAggiungiTurno() {
     final _formKey = GlobalKey<FormState>();
     final Map<String, String> _newData = {};
     final theme = Theme.of(context);
     final textStyle = TextStyle(color: theme.colorScheme.onSurface);
+    
+    bool _isSaving = false;
 
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text('Aggiungi Tipo Turno'),
-        content: Form(
-          key: _formKey,
-          child: SingleChildScrollView(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextFormField(decoration: InputDecoration(labelText: 'Nome Turno'), style: textStyle, validator: (v) => v!.isEmpty ? 'Obbligatorio' : null, onSaved: (v) => _newData['nome_turno'] = v!,),
-                SizedBox(height: 16),
-                TimePickerFormField(labelText: 'Orario Inizio', onSaved: (v) => _newData['orario_inizio'] = v!,),
-                SizedBox(height: 16),
-                TimePickerFormField(labelText: 'Orario Fine', onSaved: (v) => _newData['orario_fine'] = v!,),
-            ]),
-          )
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.of(ctx).pop(), child: Text('Annulla')),
-          ElevatedButton(
-            child: Text('Salva'),
-            onPressed: () {
-              if (_formKey.currentState!.validate()) {
-                _formKey.currentState!.save();
-                Provider.of<TurniProvider>(context, listen: false).addTipoTurno(_newData);
-                Navigator.of(ctx).pop();
-              }
-            },
-          ),
-        ],
+      barrierDismissible: false, // Per prevenire la chiusura durante il salvataggio
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setStateDialog) {
+          return AlertDialog(
+            title: const Text('Aggiungi Tipo Turno'),
+            content: Form(
+              key: _formKey,
+              child: SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextFormField(decoration: const InputDecoration(labelText: 'Nome Turno'), style: textStyle, validator: (v) => v!.isEmpty ? 'Obbligatorio' : null, onSaved: (v) => _newData['nome_turno'] = v!,),
+                    const SizedBox(height: 16),
+                    // Assumiamo che TimePickerFormField e SizeBox siano definiti altrove
+                    TimePickerFormField(labelText: 'Orario Inizio', onSaved: (v) => _newData['orario_inizio'] = v!,),
+                    const SizedBox(height: 16),
+                    TimePickerFormField(labelText: 'Orario Fine', onSaved: (v) => _newData['orario_fine'] = v!,),
+                  ]),
+              )
+            ),
+            actions: [
+              TextButton(onPressed: _isSaving ? null : () => Navigator.of(ctx).pop(), child: const Text('Annulla')),
+              ElevatedButton(
+                child: _isSaving 
+                    ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)) 
+                    : const Text('Salva'),
+                // 🚨 Logica Asincrona Corretta
+                onPressed: _isSaving ? null : () async {
+                  if (_formKey.currentState!.validate()) {
+                    _formKey.currentState!.save();
+                    setStateDialog(() => _isSaving = true);
+                    
+                    final success = await Provider.of<TurniProvider>(context, listen: false).addTipoTurno(_newData);
+                    
+                    if (ctx.mounted) {
+                      // 🚨 Importante: Ripristina _isSaving solo DOPO la chiamata await se fallisce
+                      if (success) {
+                        Navigator.of(ctx).pop();
+                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Turno aggiunto!'), backgroundColor: Colors.green));
+                      } else {
+                        setStateDialog(() => _isSaving = false); // 🚨 Ripristina lo stato qui in caso di errore
+                        final error = Provider.of<TurniProvider>(context, listen: false).error ?? 'Errore aggiunta turno.';
+                        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error), backgroundColor: Colors.red));
+                      }
+                    }
+                  }
+                },
+              ),
+            ],
+          );
+        }
       ),
     );
   }
@@ -1106,21 +1620,37 @@ class _SetupScreenState extends State<SetupScreen> {
   void _confermaEliminazioneTurno(String id) {
     final theme = Theme.of(context);
     final textStyleOnPrimary = TextStyle(color: theme.colorScheme.onPrimary);
-    showDialog(context: context, builder: (ctx) => AlertDialog(
-      backgroundColor: theme.colorScheme.primary,
-      title: Text('Confermi?', style: textStyleOnPrimary),
-      content: Text('Questa azione eliminerà il tipo di turno.',style: textStyleOnPrimary),
-      actions: [
-        TextButton(onPressed: () => Navigator.of(ctx).pop(), child: Text('Annulla', style: textStyleOnPrimary)),
-        TextButton(
-          child: Text('Elimina', style: TextStyle(color: theme.colorScheme.error, fontWeight: FontWeight.bold)),
-          onPressed: () {
-            Provider.of<TurniProvider>(context, listen: false).deleteTipoTurno(id);
-            Navigator.of(ctx).pop();
-          },
-        ),
-      ],
-    ));
+    
+    showDialog(
+      context: context, 
+      builder: (ctx) => AlertDialog(
+        backgroundColor: theme.colorScheme.primary,
+        title: Text('Confermi?', style: textStyleOnPrimary),
+        content: Text('Questa azione eliminerà il tipo di turno.',style: textStyleOnPrimary),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(), child: Text('Annulla', style: textStyleOnPrimary)),
+          TextButton(
+            child: Text('Elimina', style: TextStyle(color: theme.colorScheme.error, fontWeight: FontWeight.bold)),
+            onPressed: () async { // 🚨 MODIFICA 1: Rendi la funzione asincrona
+              // Chiudiamo il dialogo immediatamente
+              Navigator.of(ctx).pop(); 
+
+              // Eseguiamo l'operazione di eliminazione asincrona
+              final success = await Provider.of<TurniProvider>(context, listen: false).deleteTipoTurno(id);
+              
+              // Gestiamo il feedback DOPO che l'operazione è terminata
+              if (!success && mounted) {
+                  final error = Provider.of<TurniProvider>(context, listen: false).error ?? 'Eliminazione fallita.';
+                  // 🚨 MODIFICA 2: Usa context per lo ScaffoldMessenger
+                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error), backgroundColor: Colors.red));
+              } else if (success && mounted) {
+                   ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Turno eliminato con successo!'), backgroundColor: Colors.green));
+              }
+            },
+          ),
+        ],
+      )
+    );
   }
 
 
@@ -1180,22 +1710,24 @@ class _SetupScreenState extends State<SetupScreen> {
 }
 
 class DipendenteItem extends StatefulWidget {
-  final Dipendente dipendente;
+  // 🚨 Modifica: Il tipo è ora Cliente
+  final Cliente dipendente;
   DipendenteItem({Key? key, required this.dipendente}) : super(key: key);
   @override
   _DipendenteItemState createState() => _DipendenteItemState();
 }
 
 class _DipendenteItemState extends State<DipendenteItem> {
+
+  final _formKey = GlobalKey<FormState>();
+
   bool _isEditing = false;
   bool _isExpanded = false;
   late TextEditingController _nomeController;
   late TextEditingController _ruoloController;
-  late TextEditingController _pinController;
   late TextEditingController _emailController;
   late TextEditingController _telController;
   late TextEditingController _coloreController;
-  late List<TextEditingController> _extraControllers;
 
   @override
   void initState() {
@@ -1205,76 +1737,61 @@ class _DipendenteItemState extends State<DipendenteItem> {
 
   void _initControllers() {
     final dip = widget.dipendente;
-    _nomeController = TextEditingController(text: dip.nomeDipendente);
+    _nomeController = TextEditingController(text: dip.ragioneSociale);
     _ruoloController = TextEditingController(text: dip.ruolo);
-    _pinController = TextEditingController(text: dip.pin);
-    _emailController = TextEditingController(text: dip.email);
-    _telController = TextEditingController(text: dip.telefono);
+    _emailController = TextEditingController(text: dip.mail);
+    _telController = TextEditingController(text: dip.telefono01);
     _coloreController = TextEditingController(text: dip.colore);
-    
-    _extraControllers = List.generate(10, (i) {
-      switch (i) {
-        case 0: return TextEditingController(text: dip.campoExtra01);
-        case 1: return TextEditingController(text: dip.campoExtra02);
-        case 2: return TextEditingController(text: dip.campoExtra03);
-        case 3: return TextEditingController(text: dip.campoExtra04);
-        case 4: return TextEditingController(text: dip.campoExtra05);
-        case 5: return TextEditingController(text: dip.campoExtra06);
-        case 6: return TextEditingController(text: dip.campoExtra07);
-        case 7: return TextEditingController(text: dip.campoExtra08);
-        case 8: return TextEditingController(text: dip.campoExtra09);
-        case 9: return TextEditingController(text: dip.campoExtra10);
-        default: return TextEditingController();
-      }
-    });
   }
   
   @override
   void didUpdateWidget(DipendenteItem oldWidget) {
-      super.didUpdateWidget(oldWidget);
-      if (widget.dipendente != oldWidget.dipendente) {
-          _initControllers();
-      }
+    super.didUpdateWidget(oldWidget);
+    if (widget.dipendente != oldWidget.dipendente) {
+      _initControllers();
+    }
   }
 
   @override
   void dispose() {
     _nomeController.dispose();
     _ruoloController.dispose();
-    _pinController.dispose();
+    // PIN rimosso
     _emailController.dispose();
     _telController.dispose();
     _coloreController.dispose();
-    _extraControllers.forEach((c) => c.dispose());
+    // Campi extra rimossi
     super.dispose();
   }
-  
+
+
   void _onSave() {
+      // 🚨 CORREZIONE: Questo è il metodo corretto per aggiornare i DIPENDENTI.
       final theme = Theme.of(context);
       final Map<String, dynamic> data = {
-        'nome_dipendente': _nomeController.text,
+        // Mappa da Cliente a payload (usa i nomi del payload del provider)
+        'nome_dipendente': _nomeController.text, // Mappato su ragione_sociale nel provider
         'ruolo': _ruoloController.text,
-        'pin': _pinController.text,
-        'email': _emailController.text,
-        'telefono': _telController.text,
+        'email': _emailController.text, // Mappato su mail nel provider
+        'telefono': _telController.text, // Mappato su telefono01 nel provider
         'colore': _coloreController.text,
       };
 
-      for (int i = 0; i < _extraControllers.length; i++) {
-        data['campo_extra_${(i + 1).toString().padLeft(2, '0')}'] = _extraControllers[i].text;
-      }
-
+      // 🚨 Aggiornamento asincrono del Dipendente
       Provider.of<DipendentiProvider>(context, listen: false)
-        .updateDipendente(widget.dipendente.idUnico, data)
+        .updateDipendente(widget.dipendente.idCliente, data)
         .then((success) {
           if (success && mounted) {
               setState(() { _isEditing = false; _isExpanded = false; });
-              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Dipendente aggiornato!'), duration: Duration(seconds: 2),));
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Dipendente aggiornato!'), duration: Duration(seconds: 2),));
           } else if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Errore durante l\'aggiornamento.'), backgroundColor: theme.colorScheme.error,));
+              final error = Provider.of<DipendentiProvider>(context, listen: false).error ?? 'Errore durante l\'aggiornamento.';
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error), backgroundColor: theme.colorScheme.error,));
           }
       });
   }
+
+
 
   @override
   Widget build(BuildContext context) {
@@ -1285,7 +1802,7 @@ class _DipendenteItemState extends State<DipendenteItem> {
         side: BorderSide(color: theme.colorScheme.primary.withOpacity(0.5), width: 1),
         borderRadius: BorderRadius.circular(4.0)
       ),
-      margin: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       child: InkWell(
         onTap: () {
           if (!_isEditing) {
@@ -1296,6 +1813,7 @@ class _DipendenteItemState extends State<DipendenteItem> {
         },
         child: Padding(
           padding: const EdgeInsets.all(8.0),
+          // 🚨 Modifica: build view aggiornata (PIN e campi extra rimossi)
           child: _isEditing
               ? _buildEditingView()
               : (_isExpanded ? _buildExpandedView() : _buildReadOnlyView()),
@@ -1307,9 +1825,16 @@ class _DipendenteItemState extends State<DipendenteItem> {
   Widget _buildReadOnlyView() {
     final theme = Theme.of(context);
     final dip = widget.dipendente;
+    // 🚨 Modifica: Rimuovi riferimento a pin e usa ragioneSociale/colore
     return ListTile(
-      title: Text(dip.nomeDipendente, style: TextStyle(fontWeight: FontWeight.bold, color: theme.colorScheme.onPrimary)),
-      subtitle: Text('Ruolo: ${dip.ruolo}\nPIN: ${dip.pin}\nTel: ${dip.telefono}', style: TextStyle(color: theme.colorScheme.onPrimary.withOpacity(0.8))),
+      title: Text(dip.ragioneSociale ?? 'N/A', style: TextStyle(fontWeight: FontWeight.bold, color: theme.colorScheme.onPrimary)),
+      subtitle: Text('Ruolo: ${dip.ruolo}\nTel: ${dip.telefono01}', style: TextStyle(color: theme.colorScheme.onPrimary.withOpacity(0.8))),
+      leading: CircleAvatar(
+        backgroundColor: dip.colore != null && dip.colore!.isNotEmpty 
+            ? Color(int.parse(dip.colore!.replaceAll('#', '0xFF'))) 
+            : theme.colorScheme.secondary,
+        child: Text(dip.ragioneSociale?.substring(0,1).toUpperCase() ?? 'D', style: TextStyle(color: theme.colorScheme.onSecondary)),
+      ),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -1318,9 +1843,9 @@ class _DipendenteItemState extends State<DipendenteItem> {
             onPressed: () => setState(() => _isEditing = true),
           ),
           IconButton(
-            icon: Icon(Icons.delete, color: theme.colorScheme.error),
+            icon: Icon(Icons.delete, color: theme.colorScheme.onPrimary),
             onPressed: () => (context.findAncestorStateOfType<_SetupScreenState>())?.
-                _confermaEliminazioneDipendente(widget.dipendente.idUnico),
+                _confermaEliminazioneDipendente(widget.dipendente.idCliente), // 🚨 Modifica: idUnico è ora idCliente
           ),
         ],
       ),
@@ -1336,7 +1861,7 @@ class _DipendenteItemState extends State<DipendenteItem> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         ListTile(
-          title: Text(dip.nomeDipendente, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18, color: theme.colorScheme.onPrimary)),
+          title: Text(dip.ragioneSociale ?? 'N/A', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18, color: theme.colorScheme.onPrimary)),
           subtitle: Text('Ruolo: ${dip.ruolo}', style: textStyle),
           trailing: IconButton(
             icon: Icon(Icons.arrow_drop_up, size: 30, color: theme.colorScheme.onPrimary),
@@ -1353,25 +1878,15 @@ class _DipendenteItemState extends State<DipendenteItem> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('ID Unico: ${dip.idUnico}', style: textStyle),
-              Text('PIN: ${dip.pin}', style: textStyle),
-              Text('Email: ${dip.email}', style: textStyle),
-              Text('Telefono: ${dip.telefono}', style: textStyle),
+              Text('ID Contatto: ${dip.idCliente}', style: textStyle), // 🚨 Modifica: idUnico è ora idCliente
+              Text('Email: ${dip.mail}', style: textStyle),
+              Text('Telefono: ${dip.telefono01}', style: textStyle),
               Text('Colore: ${dip.colore}', style: textStyle),
-              if (dip.campoExtra01.isNotEmpty) Text('Campo Extra 01: ${dip.campoExtra01}', style: textStyle),
-              if (dip.campoExtra02.isNotEmpty) Text('Campo Extra 02: ${dip.campoExtra02}', style: textStyle),
-              if (dip.campoExtra03.isNotEmpty) Text('Campo Extra 03: ${dip.campoExtra03}', style: textStyle),
-              if (dip.campoExtra04.isNotEmpty) Text('Campo Extra 04: ${dip.campoExtra04}', style: textStyle),
-              if (dip.campoExtra05.isNotEmpty) Text('Campo Extra 05: ${dip.campoExtra05}', style: textStyle),
-              if (dip.campoExtra06.isNotEmpty) Text('Campo Extra 06: ${dip.campoExtra06}', style: textStyle),
-              if (dip.campoExtra07.isNotEmpty) Text('Campo Extra 07: ${dip.campoExtra07}', style: textStyle),
-              if (dip.campoExtra08.isNotEmpty) Text('Campo Extra 08: ${dip.campoExtra08}', style: textStyle),
-              if (dip.campoExtra09.isNotEmpty) Text('Campo Extra 09: ${dip.campoExtra09}', style: textStyle),
-              if (dip.campoExtra10.isNotEmpty) Text('Campo Extra 10: ${dip.campoExtra10}', style: textStyle),
+              // 🚨 PIN e Campi Extra rimossi qui
             ],
           ),
         ),
-        SizedBox(height: 10),
+        const SizedBox(height: 10),
         Row(
           mainAxisAlignment: MainAxisAlignment.end,
           children: [
@@ -1382,7 +1897,7 @@ class _DipendenteItemState extends State<DipendenteItem> {
             IconButton(
               icon: Icon(Icons.delete, color: theme.colorScheme.error),
               onPressed: () => (context.findAncestorStateOfType<_SetupScreenState>())?.
-                  _confermaEliminazioneDipendente(widget.dipendente.idUnico),
+                  _confermaEliminazioneDipendente(widget.dipendente.idCliente), // 🚨 Modifica: idUnico è ora idCliente
             ),
           ],
         ),
@@ -1390,77 +1905,71 @@ class _DipendenteItemState extends State<DipendenteItem> {
     );
   }
 
+
   Widget _buildEditingView() {
     final theme = Theme.of(context);
     final textStyle = TextStyle(color: theme.colorScheme.onSurface);
-    return Column(
-      children: [
-        TextFormField(controller: _nomeController, decoration: InputDecoration(labelText: 'Nome'),style: textStyle,),
-        TextFormField(controller: _ruoloController, decoration: InputDecoration(labelText: 'Ruolo'),style: textStyle,),
-        TextFormField(controller: _pinController, decoration: InputDecoration(labelText: 'PIN'), keyboardType: TextInputType.number,style: textStyle,),
-        TextFormField(controller: _emailController, decoration: InputDecoration(labelText: 'Email'), keyboardType: TextInputType.emailAddress,style: textStyle,),
-        TextFormField(controller: _telController, decoration: InputDecoration(labelText: 'Telefono'), keyboardType: TextInputType.phone,style: textStyle,),
-        TextFormField(controller: _coloreController, decoration: InputDecoration(labelText: 'Colore'),style: textStyle,),
-        
-        ExpansionTile(
-          title: Text('Campi Extra', style: TextStyle(fontSize: 14)),
-          tilePadding: EdgeInsets.zero,
-          children: [
-            for (int i = 0; i < 10; i++)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 2.0),
-                child: TextFormField(
-                  controller: _extraControllers[i],
-                  decoration: InputDecoration(
-                    labelText: 'Campo Extra ${(i + 1).toString().padLeft(2, '0')}',
-                    isDense: true,
-                  ),
-                  style: textStyle,
-                ),
+    return Form( // 🚨 CORREZIONE: Aggiungi il Form widget
+      key: _formKey, // 🚨 CORREZIONE: Usa la form key
+      child: Column(
+        children: [
+          TextFormField(controller: _nomeController, decoration: const InputDecoration(labelText: 'Nome'),style: textStyle,),
+          TextFormField(controller: _ruoloController, decoration: const InputDecoration(labelText: 'Ruolo'),style: textStyle,),
+          TextFormField(controller: _emailController, decoration: const InputDecoration(labelText: 'Email'), keyboardType: TextInputType.emailAddress,style: textStyle,),
+          TextFormField(controller: _telController, decoration: const InputDecoration(labelText: 'Telefono'), keyboardType: TextInputType.phone,style: textStyle,),
+          TextFormField(controller: _coloreController, decoration: const InputDecoration(labelText: 'Colore'),style: textStyle,),
+          
+          const SizedBox(height: 10),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              TextButton(
+                child: const Text('Annulla'),
+                onPressed: () {
+                  _initControllers(); // Ri-inizializza i controller con i valori originali
+                  setState(() { _isEditing = false; _isExpanded = true; });
+                },
               ),
-          ],
-        ),
-
-        SizedBox(height: 10),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.end,
-          children: [
-            TextButton(
-              child: Text('Annulla'),
-              onPressed: () {
-                _initControllers(); 
-                setState(() { _isEditing = false; _isExpanded = true; });
-              },
-            ),
-            ElevatedButton(
-              child: Text('Salva'),
-              onPressed: _onSave,
-            ),
-          ],
-        )
-      ],
+              ElevatedButton(
+                child: const Text('Salva'),
+                onPressed: () {
+                  if (_formKey.currentState!.validate()) { // 🚨 Validazione
+                    _formKey.currentState!.save(); // 🚨 Salvataggio
+                    _onSave();
+                  }
+                },
+              ),
+            ],
+          )
+        ],
+      ),
     );
   }
 }
 
 
+// lib/screens/setup_screen.dart -> classe TurnoItem e _TurnoItemState
+
 class TurnoItem extends StatefulWidget {
-  final TipoTurno tipoTurno;
+  final TipoTurno tipoTurno; // 🚨 Corretto: TipoTurno è la prop corretta
   TurnoItem({Key? key, required this.tipoTurno}) : super(key: key);
   @override
   _TurnoItemState createState() => _TurnoItemState();
 }
 
 class _TurnoItemState extends State<TurnoItem> {
-  bool _isEditing = false;
+  // 🚨 CORREZIONE: Dichiarazione di tutte le variabili di stato mancanti
   final _formKey = GlobalKey<FormState>();
   
   String? _nomeTurno;
   String? _orarioInizio;
   String? _orarioFine;
   
+  bool _isEditing = false;
+  
   void _onSave() {
     final theme = Theme.of(context);
+    // 🚨 CORREZIONE: Accesso corretto alle variabili di stato
     if (_formKey.currentState!.validate()) {
       _formKey.currentState!.save();
       final data = {
@@ -1468,14 +1977,17 @@ class _TurnoItemState extends State<TurnoItem> {
         'orario_inizio': _orarioInizio,
         'orario_fine': _orarioFine,
       };
+      
+      // 🚨 CORREZIONE: updateTipoTurno richiede idTurno
       Provider.of<TurniProvider>(context, listen: false)
         .updateTipoTurno(widget.tipoTurno.idTurno, data)
         .then((success) {
           if (success && mounted) {
-             ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Turno aggiornato!'), duration: Duration(seconds: 2)));
-             setState(() => _isEditing = false);
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Turno aggiornato!'), duration: Duration(seconds: 2)));
+              setState(() => _isEditing = false);
           } else if (mounted) {
-             ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Errore durante l\'aggiornamento.'), backgroundColor: theme.colorScheme.error));
+              final error = Provider.of<TurniProvider>(context, listen: false).error ?? 'Errore durante l\'aggiornamento.';
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error), backgroundColor: theme.colorScheme.error));
           }
         });
     }
@@ -1505,7 +2017,7 @@ class _TurnoItemState extends State<TurnoItem> {
       trailing: Row(mainAxisSize: MainAxisSize.min, children: [
         IconButton(icon: Icon(Icons.edit, color: theme.colorScheme.onPrimary), onPressed: () => setState(() => _isEditing = true)),
         IconButton(
-          icon: Icon(Icons.delete, color: theme.colorScheme.error),
+          icon: Icon(Icons.delete, color: theme.colorScheme.onPrimary), // Colore unificato
           onPressed: () => (context.findAncestorStateOfType<_SetupScreenState>())
               ?. _confermaEliminazioneTurno(widget.tipoTurno.idTurno),
         ),
@@ -1517,40 +2029,41 @@ class _TurnoItemState extends State<TurnoItem> {
     final theme = Theme.of(context);
     final textStyle = TextStyle(color: theme.colorScheme.onSurface);
     return Form(
-      key: _formKey,
+      key: _formKey, // 🚨 CORREZIONE: formKey dichiarato sopra
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
         TextFormField(
           initialValue: widget.tipoTurno.nomeTurno,
-          decoration: InputDecoration(labelText: 'Nome Turno'),
+          decoration: const InputDecoration(labelText: 'Nome Turno'),
           style: textStyle,
           validator: (v) => v!.isEmpty ? 'Obbligatorio' : null,
           onSaved: (v) => _nomeTurno = v,
         ),
-        SizedBox(height: 16),
+        const SizedBox(height: 16),
         TimePickerFormField(
           labelText: 'Orario Inizio',
           initialValue: widget.tipoTurno.orarioInizio,
           onSaved: (v) => _orarioInizio = v,
         ),
-        SizedBox(height: 16),
+        const SizedBox(height: 16),
         TimePickerFormField(
           labelText: 'Orario Fine',
           initialValue: widget.tipoTurno.orarioFine,
           onSaved: (v) => _orarioFine = v,
         ),
-        SizedBox(height: 10),
+        const SizedBox(height: 10),
         Row(mainAxisAlignment: MainAxisAlignment.end, children: [
-          TextButton(child: Text('Annulla'), onPressed: () {
+          TextButton(child: const Text('Annulla'), onPressed: () {
             setState(() => _isEditing = false);
           }),
-          ElevatedButton(child: Text('Salva'), onPressed: _onSave),
+          ElevatedButton(child: const Text('Salva'), onPressed: _onSave),
         ]),
       ]),
     );
   }
 }
+
 
 class TimePickerFormField extends FormField<String> {
   TimePickerFormField({

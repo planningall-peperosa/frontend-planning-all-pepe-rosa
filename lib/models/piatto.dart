@@ -6,7 +6,7 @@ class Piatto {
   final String genere;
   final String nome;
   final String? descrizione;
-  final String? allergeni;
+  final String? stagione;
   final String? linkFoto;
   final String tipologia;
 
@@ -15,7 +15,7 @@ class Piatto {
     required this.genere,
     required this.nome,
     this.descrizione,
-    this.allergeni,
+    this.stagione,
     this.linkFoto,
     required this.tipologia,
   });
@@ -32,7 +32,7 @@ class Piatto {
       genere:  _asString(json['genere']) ?? '',
       nome:    _asString(json['nome']) ?? 'Nome non disponibile',
       descrizione: _asString(json['descrizione']),
-      allergeni:   _asString(json['allergeni']),
+      stagione:   _asString(json['stagione']),
       linkFoto:    _asString(json['link_foto_piatto']), // <-- LEGGE SOLO DA 'link_foto_piatto'
       tipologia:   _asString(json['tipologia']) ?? '',
     );
@@ -49,7 +49,7 @@ class Piatto {
     String? genere,
     String? nome,
     String? descrizione,
-    String? allergeni,
+    String? stagione,
     String? linkFoto,
     String? tipologia,
   }) {
@@ -58,7 +58,7 @@ class Piatto {
       genere: genere ?? this.genere,
       nome: nome ?? this.nome,
       descrizione: descrizione ?? this.descrizione,
-      allergeni: allergeni ?? this.allergeni,
+      stagione: stagione ?? this.stagione,
       linkFoto: linkFoto ?? this.linkFoto,
       tipologia: tipologia ?? this.tipologia,
     );
@@ -68,7 +68,7 @@ class Piatto {
     'genere': genere,
     'nome': nome,
     'descrizione': descrizione,
-    'allergeni': allergeni,
+    'stagione': stagione,
     'link_foto_piatto': linkFoto, // <-- SCRIVE SOLO SU 'link_foto_piatto'
     'tipologia': tipologia,
   };

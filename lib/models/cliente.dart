@@ -14,6 +14,8 @@ class Cliente {
   final String? mail;
   final String? note;
   final int conteggioPreventivi;
+  final double? prezzo;
+  final String? colore; // *** NUOVO CAMPO: Colore per Dipendenti ***
 
   Cliente({
     required this.idCliente,
@@ -28,6 +30,8 @@ class Cliente {
     this.mail,
     this.note,
     this.conteggioPreventivi = 0,
+    this.prezzo,
+    this.colore, // *** NUOVO CAMPO AGGIUNTO ***
   });
 
   factory Cliente.fromJson(Map<String, dynamic> json) {
@@ -38,27 +42,35 @@ class Cliente {
       conteggio = int.tryParse(json['conteggio_preventivi']) ?? 0;
     }
 
+    double? prezzoVal;
+    if (json['prezzo'] is num) {
+      prezzoVal = (json['prezzo'] as num).toDouble();
+    } else if (json['prezzo'] is String) {
+      prezzoVal = double.tryParse(json['prezzo']);
+    }
+
     return Cliente(
-      idCliente: json['id_contatto'] ?? json['id_cliente'] ?? '',
+      idCliente: json['id_contatto'] ?? json['id_cliente'] ?? json['id_unico'] ?? '', // Aggiunto id_unico per compatibilità dipendenti
       tipo: json['tipo'] ?? 'sconosciuto',
-      ruolo: json['ruolo']?.toString(),
-      ragioneSociale: json['ragione_sociale']?.toString(),
+      // Mappiamo i campi dipendente su quelli esistenti o nuovi
+      ruolo: json['ruolo']?.toString(), // Usato per ruolo Dipendente e Fornitore
+      ragioneSociale: json['ragione_sociale']?.toString() ?? json['nome_dipendente']?.toString(), // Mappa nome_dipendente su ragioneSociale
       referente: json['referente']?.toString(),
-      telefono01: json['telefono_01']?.toString(),
+      telefono01: json['telefono_01']?.toString() ?? json['telefono']?.toString(), // Mappa telefono dipendente su telefono01
       telefono02: json['telefono_02']?.toString(),
       telefono03: json['telefono_03']?.toString(),
       indirizzo: json['indirizzo']?.toString(),
-      mail: json['mail']?.toString(),
+      mail: json['mail']?.toString() ?? json['email']?.toString(), // Mappa email dipendente su mail
       note: json['note']?.toString(),
       conteggioPreventivi: conteggio,
+      prezzo: prezzoVal,
+      colore: json['colore']?.toString(), // *** ASSEGNAZIONE NUOVO CAMPO ***
     );
   }
 
   // --- NUOVA AGGIUNTA: TRADUTTORE DA FIRESTORE ---
   factory Cliente.fromFirestore(DocumentSnapshot doc) {
     final data = doc.data() as Map<String, dynamic>;
-    // Riutilizziamo la logica fromJson che gestisce già i nomi dei campi diversi,
-    // ma ci assicuriamo di usare l'ID del documento Firestore come ID primario.
     data['id_cliente'] = doc.id;
     return Cliente.fromJson(data);
   }
@@ -77,24 +89,38 @@ class Cliente {
       mail: '',
       note: null,
       conteggioPreventivi: 0,
+      prezzo: null,
+      colore: null, // *** NUOVO CAMPO ***
     );
   }
 
-  // --- METODO AGGIUNTO ---
+  // --- METODO AGGIUNTO E AGGIORNATO PER FIRESTORE ---
   Map<String, dynamic> toJson() {
-    return {
-      'id_cliente': idCliente,
+    final Map<String, dynamic> json = {
       'tipo': tipo,
-      'ruolo': ruolo,
       'ragione_sociale': ragioneSociale,
       'referente': referente,
       'telefono_01': telefono01,
-      'telefono_02': telefono02,
-      'telefono_03': telefono03,
       'indirizzo': indirizzo,
       'mail': mail,
       'note': note,
       'conteggio_preventivi': conteggioPreventivi,
+      // Questi campi vengono inclusi solo se non sono nulli per ottimizzare Firestore
+      if (idCliente.isNotEmpty) 'id_cliente': idCliente,
+      if (telefono02 != null) 'telefono_02': telefono02,
+      if (telefono03 != null) 'telefono_03': telefono03,
+      // Campi specifici del Fornitore
+      if (tipo == 'fornitore') ...{
+        if (ruolo != null && ruolo!.isNotEmpty) 'ruolo': ruolo,
+        if (prezzo != null) 'prezzo': prezzo,
+      },
+      // Campi specifici del Dipendente
+      if (tipo == 'dipendente') ...{
+        // Se è dipendente, il campo 'ruolo' è già coperto
+        if (colore != null) 'colore': colore, // *** NUOVO CAMPO AGGIUNTO ***
+        // NB: I campi extra 01-10 e PIN sono stati omessi come da discussione precedente
+      }
     };
+    return json;
   }
 }

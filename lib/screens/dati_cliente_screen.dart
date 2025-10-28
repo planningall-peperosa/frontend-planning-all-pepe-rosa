@@ -2,23 +2,21 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
-import 'dart:convert'; // <-- NEW: per snapshot JSON canonico
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart'; // <-- AGGIUNTO per MethodChannel
+import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 
 import 'package:file_selector/file_selector.dart' as fs;
-// NEW: condivisione
 import 'package:share_plus/share_plus.dart';
 import 'package:cross_file/cross_file.dart';
 
 import 'dart:ui' as ui;
-
 import 'dart:math' as math;
 
 import '../models/cliente.dart';
@@ -34,24 +32,23 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'archivio_preventivi_screen.dart';
 
 import '../services/storage_service.dart';
-import '../widgets/firma_dialog.dart';
+
+import '../utils/pdf_generator.dart';
+import '../models/preventivo_pdf_models.dart';
 
 enum _SignatureLayout { vertical, horizontal }
 
-// =========================
-//  PARAMETRI DI LAYOUT FIRME (TOP-LEVEL)
-// =========================
 class SignatureParams {
-  final double padding;         // margine esterno del canvas PNG
-  final double leftInset;       // spostamento a destra del blocco firma Cliente
-  final double rightInset;      // margine dal bordo destro per blocco Pepe Rosa
-  final double minGap;          // distanza minima orizzontale tra le due firme
-  final double headerDownshift; // quanto scendere dopo "Nettuno data" prima delle etichette
-  final double headerFs;        // font size "Nettuno data"
-  final double captionFs;       // font size "Firma Cliente" / "Firma Pepe Rosa"
-  final double maxSignH;        // altezza massima delle PNG firma (evita upscaling)
-  final double captionsGap;     // gap sotto le etichette prima delle firme
-  final double headerExtraTop;  // extra-padding sotto "Nettuno data"
+  final double padding;
+  final double leftInset;
+  final double rightInset;
+  final double minGap;
+  final double headerDownshift;
+  final double headerFs;
+  final double captionFs;
+  final double maxSignH;
+  final double captionsGap;
+  final double headerExtraTop;
 
   const SignatureParams({
     required this.padding,
@@ -67,24 +64,21 @@ class SignatureParams {
   });
 }
 
-/// Modifica questi valori per regolare in modo stabile il layout delle firme.
 SignatureParams defaultSignatureParams() => const SignatureParams(
   padding: 24.0,
-  leftInset: 10.0,     // aumenta per spostare più a destra la firma cliente
-  rightInset: 90.0,    // aumenta per spostare più a destra la firma Pepe Rosa
-  minGap: 800.0,       // aumenta per allargare la distanza tra le due firme
-  headerDownshift: 56.0, // rende etichette + firme più in basso rispetto a "Nettuno data"
-  headerFs: 40.0,      // grandezza "Nettuno data"
-  captionFs: 32.0,     // grandezza "Firma Cliente"/"Firma Pepe Rosa"
-  maxSignH: 300.0,     // scala massima in altezza per le PNG delle firme
-  captionsGap: 8.0,    // spazio tra etichette e immagini firma
-  headerExtraTop: 12.0,// piccolo margine sotto l'header
+  leftInset: 10.0,
+  rightInset: 90.0,
+  minGap: 800.0,
+  headerDownshift: 56.0,
+  headerFs: 40.0,
+  captionFs: 32.0,
+  maxSignH: 300.0,
+  captionsGap: 8.0,
+  headerExtraTop: 12.0,
 );
 
-// --- LOG helper ---
 void _logUi(String msg) {
   if (kDebugMode) {
-    // ignore: avoid_print
     print('[DatiCliente] $msg');
   }
 }
@@ -105,76 +99,83 @@ class _DatiClienteScreenState extends State<DatiClienteScreen> {
   final _telefonoController = TextEditingController();
   final _emailController = TextEditingController();
   final _nomeEventoController = TextEditingController();
-
   final _accontoController = TextEditingController();
 
-  // NEW: focus ed autovalidazione
   final _nomeClienteFocusNode = FocusNode();
   bool _autoValidate = false;
 
   Timer? _debounce;
   bool _isNuovoCliente = false;
 
-  bool _isProcessing = false; // disabilita azioni durante un task
+  bool _isProcessing = false;
   String? _busyAction; // 'create' | 'save' | 'pdf' | 'firma'
 
-  // Snapshot payload canonico all'apertura (FALLBACK se il provider non espone dirty flag)
+  bool _pdfBusy = false;
+
+  // 🔐 Safe refs
+  ScaffoldMessengerState? _messenger;
+  PreventiviProvider? _preventiviProv;
+
   String? _openedPayloadJson;
+
+  // --- snackbar helper sicuro
+  void _showSnack(SnackBar bar) {
+    final m = _messenger;
+    if (!mounted || m == null || !m.mounted) return;
+    m.showSnackBar(bar);
+  }
 
   @override
   void initState() {
     super.initState();
+    // NB: non usare Provider.of qui per scrivere; farlo dopo in didChangeDependencies/post-frame
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final prov = Provider.of<PreventivoBuilderProvider>(context, listen: false);
       _popolaCampiDalBuilder(prov);
 
-      // >>> MOD: listener che salva NULL quando il campo è vuoto
       _accontoController.addListener(() {
         final raw = _accontoController.text.trim().replaceAll(',', '.');
         if (raw.isEmpty) {
           _setAccontoNullable(prov, null);
         } else {
           final val = double.tryParse(raw);
-          if (val != null) {
-            _setAccontoNullable(prov, val);
-          }
+          if (val != null) _setAccontoNullable(prov, val);
         }
       });
-      // <<< MOD
 
       setState(() {
         _isNuovoCliente = prov.cliente == null || (prov.cliente!.idCliente.isEmpty);
       });
 
-      // Fallback snapshot iniziale (se non useremo il dirty flag)
       _openedPayloadJson = _payloadJsonFor(prov);
 
-      // >>> NEW: segnala che siamo nello screen di editing (sospende refresh/version-check di fondo)
-      context.read<PreventiviProvider>().setEditingOpen(true);
-      // <<< NEW
+      // sposta setEditingOpen(true) su post-frame ma usa provider cached
+      _preventiviProv?.setEditingOpen(true);
 
-      _logUi(
-          'init done (cliente=${prov.cliente?.ragioneSociale ?? "-"}, preventivoId=${prov.preventivoId ?? "-"})');
+      _logUi('init done (cliente=${prov.cliente?.ragioneSociale ?? "-"}, preventivoId=${prov.preventivoId ?? "-"})');
     });
   }
 
-  // --- MOD: helper per impostare acconto come nullable se disponibile ---
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _messenger = ScaffoldMessenger.maybeOf(context);
+    // cache del provider per usarlo in dispose senza lookup dal context
+    _preventiviProv ??= context.read<PreventiviProvider>();
+  }
+
   void _setAccontoNullable(PreventivoBuilderProvider prov, double? valore) {
     try {
       final dyn = prov as dynamic;
-      // se esiste un setter nullable, usalo
       dyn.setAccontoNullable(valore);
       return;
     } catch (_) {
-      // fallback: se non esiste, usa setAcconto(double) se hai un valore
       if (valore != null) {
         try {
           final dyn = prov as dynamic;
           dyn.setAcconto(valore);
           return;
         } catch (_) {}
-      } else {
-        // nessun metodo nullable disponibile
       }
     }
   }
@@ -294,31 +295,29 @@ class _DatiClienteScreenState extends State<DatiClienteScreen> {
     if (!isValid) {
       setState(() => _autoValidate = true);
       _nomeClienteFocusNode.requestFocus();
-      ScaffoldMessenger.of(context).showSnackBar(
+      _showSnack(
         const SnackBar(content: Text('Compila i campi obbligatori: Nome Cliente')),
       );
     }
     return isValid;
   }
 
-
   Future<bool> _salvaSuFirebase({bool popOnSuccess = false}) async {
     if (!_formKey.currentState!.validate()) {
-      ScaffoldMessenger.of(context).showSnackBar(
+      _showSnack(
         const SnackBar(content: Text('Compila i campi obbligatori prima di salvare.'), backgroundColor: Colors.red),
       );
       return false;
     }
-    
+
     setState(() {
-       _isProcessing = true;
-       _busyAction = 'save';
+      _isProcessing = true;
+      _busyAction = 'save';
     });
-    
+
     _aggiornaBuilderDaiController();
-    final scaffoldMessenger = ScaffoldMessenger.of(context);
     bool success = false;
-    
+
     try {
       final builder = Provider.of<PreventivoBuilderProvider>(context, listen: false);
       final dataToSave = builder.toFirestoreMap();
@@ -328,12 +327,12 @@ class _DatiClienteScreenState extends State<DatiClienteScreen> {
         await FirebaseFirestore.instance.collection('preventivi').doc(preventivoId).update(dataToSave);
       } else {
         final newDoc = await FirebaseFirestore.instance.collection('preventivi').add(dataToSave);
-        builder.setPreventivoId(newDoc.id); 
+        builder.setPreventivoId(newDoc.id);
       }
-      
+
       _clearLocalChangesDyn(builder);
-      
-      scaffoldMessenger.showSnackBar(
+
+      _showSnack(
         const SnackBar(content: Text('Preventivo salvato con successo!'), backgroundColor: Colors.green),
       );
 
@@ -341,9 +340,8 @@ class _DatiClienteScreenState extends State<DatiClienteScreen> {
         Navigator.of(context).popUntil((route) => route.isFirst);
       }
       success = true;
-
     } catch (e) {
-      scaffoldMessenger.showSnackBar(
+      _showSnack(
         SnackBar(content: Text('Errore durante il salvataggio: $e'), backgroundColor: Colors.red),
       );
       success = false;
@@ -358,9 +356,36 @@ class _DatiClienteScreenState extends State<DatiClienteScreen> {
     return success;
   }
 
+  Future<void> _onTapGeneraPdf() async {
+    if (_pdfBusy) return;
+    setState(() {
+      _pdfBusy = true;
+      _busyAction = 'pdf';
+    });
 
+    try {
+      final ok = await _salvaSuFirebase(popOnSuccess: false);
+      if (!ok) {
+        _showSnack(
+          const SnackBar(content: Text('Errore nel salvataggio del preventivo')),
+        );
+        return;
+      }
 
-
+      await _salvaEGeneraPdf();
+    } catch (e, st) {
+      debugPrint('[UI][ERROR] generaPdf: $e\n$st');
+      _showSnack(
+        const SnackBar(content: Text('Errore durante la generazione del PDF')),
+      );
+    } finally {
+      if (!mounted) return;
+      setState(() {
+        _pdfBusy = false;
+        if (_busyAction == 'pdf') _busyAction = null;
+      });
+    }
+  }
 
   Widget _buildNavigationControls() {
     Widget _spinner() => const SizedBox(
@@ -385,14 +410,15 @@ class _DatiClienteScreenState extends State<DatiClienteScreen> {
       child: Row(
         children: [
           Expanded(
+            flex: 9,
             child: OutlinedButton(
               style: OutlinedButton.styleFrom(
-                textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
                 padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 24),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                side: BorderSide.none,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                side: const BorderSide(color: Colors.black26, width: 1.2),
+                backgroundColor: Colors.white,
+                foregroundColor: Colors.black87,
               ),
               onPressed: _isProcessing
                   ? null
@@ -401,17 +427,18 @@ class _DatiClienteScreenState extends State<DatiClienteScreen> {
                       Navigator.of(context).pop();
                     },
               child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
                 children: const [
-                  Icon(Icons.arrow_back_ios_new),
+                  Icon(Icons.arrow_back_ios_new, size: 18),
                   SizedBox(width: 8),
-                  Text('Servizi extra'),
+                  Text('       Servizi'),
+                  Spacer(),
                 ],
               ),
             ),
           ),
           const SizedBox(width: 12),
           Expanded(
+            flex: 10,
             child: ElevatedButton.icon(
               icon: (_busyAction == 'save') ? _spinner() : const Icon(Icons.save),
               label: const Text('Salva'),
@@ -420,10 +447,11 @@ class _DatiClienteScreenState extends State<DatiClienteScreen> {
           ),
           const SizedBox(width: 12),
           Expanded(
+            flex: 10,
             child: ElevatedButton.icon(
-              icon: (_busyAction == 'pdf') ? _spinner() : const Icon(Icons.picture_as_pdf),
+              icon: (_busyAction == 'pdf' || _pdfBusy) ? _spinner() : const Icon(Icons.picture_as_pdf),
               label: const Text('Genera PDF'),
-              onPressed: _isProcessing ? null : _salvaEGeneraPdf,
+              onPressed: _pdfBusy ? null : _onTapGeneraPdf,
             ),
           ),
         ],
@@ -431,19 +459,9 @@ class _DatiClienteScreenState extends State<DatiClienteScreen> {
     );
   }
 
-
-
-  // La vecchia funzione _salva ora è obsoleta. Puoi cancellarla o lasciarla vuota.
   Future<void> _salva() async {
     _logUi('CHIAMATA A FUNZIONE DEPRECATA _salva(). Usare _salvaSuFirebase().');
   }
-
-
-
-  // =================================================
-  // --- FUNZIONE PDF AGGIORNATA ---
-  // =================================================
-
 
   Future<void> _salvaEGeneraPdf() async {
     if (!_validateFormOrNotify()) return;
@@ -454,75 +472,71 @@ class _DatiClienteScreenState extends State<DatiClienteScreen> {
       _isProcessing = true;
       _busyAction = 'pdf';
     });
-    
+
     _aggiornaBuilderDaiController();
 
-    final prov = Provider.of<PreventivoBuilderProvider>(context, listen: false);
+    final builder = Provider.of<PreventivoBuilderProvider>(context, listen: false);
     final service = PreventiviService();
 
     try {
-      // Passo 1: Salva sempre prima su Firebase se ci sono modifiche
-      final salvataggioOk = await _salvaSuFirebase(popOnSuccess: false);
-      if (!salvataggioOk) {
-        throw Exception('Salvataggio su Firebase fallito prima della generazione del PDF.');
+      if (_hasLocalChangesDyn(builder)) {
+        final salvataggioOk = await _salvaSuFirebase(popOnSuccess: false);
+        if (!salvataggioOk) {
+          throw Exception('Salvataggio su Firebase fallito prima della generazione del PDF.');
+        }
       }
-      
-      // Passo 2: RECUPERA L'URL DELLA FIRMA DA FIRESTORE (Logica invariata)
-      final doc = await FirebaseFirestore.instance.collection('preventivi').doc(prov.preventivoId!).get();
-      final firmaUrl = doc.data()?['firma_url'] as String?;
 
-      // Passo 3: Crea il payload e chiama il servizio Python (Logica invariata)
-      final payloadCompleto = prov.creaPayloadSalvataggio();
+      final payloadCompleto = builder.creaPayloadSalvataggio();
       if (payloadCompleto == null) throw Exception('Dati incompleti per la generazione del PDF');
+      final preventivoId = builder.preventivoId ?? '';
 
-      final Map<String, dynamic> payload = payloadCompleto['payload'] as Map<String, dynamic>;
-      payload['firma_url'] = firmaUrl;
-      
-      if (prov.preventivoId == null || prov.preventivoId!.isEmpty) {
-          throw Exception("ID Preventivo non trovato dopo il salvataggio.");
+      // Provo a recuperare firma_url dal documento, se esiste
+      String? firmaUrlDb;
+      if (preventivoId.isNotEmpty) {
+        final snap = await FirebaseFirestore.instance
+            .collection('preventivi')
+            .doc(preventivoId)
+            .get();
+        final data = snap.data() ?? {};
+        final maybe = data['firma_url'] as String?;
+        if (maybe != null && maybe.isNotEmpty) {
+          firmaUrlDb = maybe;
+        }
       }
 
-      final body = {
-        'preventivo_id': prov.preventivoId,
-        'payload': payload,
-      };
+      // Costruisco il modello PDF includendo l'ID (e la firma se trovata)
+      final preventivoObj = PreventivoCompletoPdf.fromMap({
+        ...payloadCompleto['payload'] as Map<String, dynamic>,
+        'preventivo_id': preventivoId,
+        if (firmaUrlDb != null) 'firma_url': firmaUrlDb,
+      });
 
-      // Passo 4: Chiama il servizio Python
-      final swPdf = Stopwatch()..start();
-      final bytes = await service.salvaEGeneraPdf(body); 
-      swPdf.stop();
-      _logUi('service.salvaEGeneraPdf ${swPdf.elapsedMilliseconds}ms (bytes=${bytes.length})');
-      
-      // =========================================================================
-      // --- CORREZIONE CHIAVE: CHIAMATA ALLA FUNZIONE DI SALVATAGGIO DESKTOP ---
-      // =========================================================================
+      // Stato “preferito” dalla UI, ma il generatore lo risolverà comunque via DB
+      final statoPreferito = builder.status ?? 'Bozza';
+
+      final bytes = await generaPdfDaDatiDart(preventivoObj, statoPreferito);
+
+      _logUi('Generazione PDF Dart completata (bytes=${bytes.length})');
+
       if (!kIsWeb && (Platform.isMacOS || Platform.isWindows || Platform.isLinux)) {
-          await _savePdfDesktop(bytes, prov);
+        await _savePdfDesktop(bytes, builder);
       } else if (!kIsWeb && Platform.isAndroid) {
-          await _presentAndroidPdfActions(bytes, prov);
+        await _presentAndroidPdfActions(bytes, builder);
       } else if (!kIsWeb && Platform.isIOS) {
-          await Share.shareXFiles(
-            [XFile.fromData(bytes, name: _suggestedName(prov), mimeType: 'application/pdf')],
-            text: 'Preventivo',
-          );
+        await Share.shareXFiles(
+          [XFile.fromData(bytes, name: _suggestedName(builder), mimeType: 'application/pdf')],
+          text: 'Preventivo',
+        );
       } else {
-          // Logica per Web/Fallback: se web, non ci sarà la finestra di dialogo
-          if(mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Generazione PDF completata.')),
-              );
-          }
+        final tmp = await getTemporaryDirectory();
+        final file = File('${tmp.path}/${_suggestedName(builder)}');
+        await file.writeAsBytes(bytes, flush: true);
+        _showSnack(SnackBar(content: Text('PDF creato: ${file.path}')));
       }
-      // =========================================================================
 
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('PDF generato con successo')),
-      );
-      
+      _showSnack(const SnackBar(content: Text('PDF generato con successo')));
     } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Errore: $e')));
+      _showSnack(SnackBar(content: Text('Errore generazione PDF: $e')));
       _logUi('PDF error: $e');
     } finally {
       if (mounted) {
@@ -536,48 +550,52 @@ class _DatiClienteScreenState extends State<DatiClienteScreen> {
     }
   }
 
-  // ====================== DESKTOP SAVE (file_selector) =======================
-
-
   Future<void> _savePdfDesktop(Uint8List pdfBytes, PreventivoBuilderProvider prov) async {
-      final suggestedName = _suggestedName(prov);
-      
-      // --- AGGIUNTA LOG DI DEBUG ---
-      print('[DEBUG SAVE] Tentativo di salvare PDF desktop tramite file_selector...');
-      // ----------------------------
+    final suggestedName = _suggestedName(prov);
 
-      final home = Platform.environment['HOME'] ?? '';
-      final defaultDir =
-          home.isNotEmpty ? '$home/Documents/Preventivi_PepeRosa' : Directory.systemTemp.path; // Percorso corretto
-      
-      try {
-        await Directory(defaultDir).create(recursive: true);
-      } catch (_) {}
+    _logUi('[SAVE DESKTOP] Tentativo di salvare PDF tramite file_selector...');
 
-      final saveLoc = await fs.getSaveLocation(
+    final home = Platform.environment['HOME'] ?? '';
+    final defaultDir =
+        home.isNotEmpty ? '$home/Documents/Preventivi_PepeRosa' : Directory.systemTemp.path;
+
+    try {
+      if (!Directory(defaultDir).existsSync()) {
+        Directory(defaultDir).createSync(recursive: true);
+      }
+    } catch (_) {
+      _logUi('[SAVE DESKTOP] Errore nella creazione della directory di default: $_');
+    }
+
+    if (!mounted) {
+      _logUi('[SAVE DESKTOP] Errore: Contesto smontato prima di chiamare getSaveLocation.');
+      return;
+    }
+
+    final saveLoc = await Future.delayed(Duration.zero, () async {
+      return await fs.getSaveLocation(
         suggestedName: suggestedName,
         initialDirectory: defaultDir,
       );
-      
-      // 1. Controlla l'annullamento: saveLoc è null se l'utente clicca 'Cancel'
-      if (saveLoc == null) {
-          if (!mounted) return;
-          ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Salvataggio annullato dall\'utente.')),
-          );
-          return; 
-      }
+    });
 
-      // 2. Salva il file nel percorso scelto
-      final file = File(saveLoc.path);
+    _logUi('[SAVE DESKTOP] getSaveLocation completata. Risultato: ${saveLoc?.path ?? "ANNULLATO"}');
+
+    if (saveLoc == null) {
+      _showSnack(const SnackBar(content: Text('Salvataggio annullato dall\'utente.')));
+      return;
+    }
+
+    final file = File(saveLoc.path);
+    try {
       await file.writeAsBytes(pdfBytes, flush: true);
-      
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('PDF salvato con successo in: ${file.path}')),
-      );
+      _showSnack(SnackBar(content: Text('PDF salvato con successo in: ${file.path}')));
+    } catch (e) {
+      _logUi('[SAVE DESKTOP] Errore scrittura file: $e');
+      _showSnack(SnackBar(content: Text('Errore durante la scrittura del file: $e')));
+    }
   }
-  // =================== ANDROID ACTIONS (Share / Save via SAF) ===============
+
   Future<void> _presentAndroidPdfActions(
     Uint8List pdfBytes,
     PreventivoBuilderProvider prov,
@@ -622,21 +640,13 @@ class _DatiClienteScreenState extends State<DatiClienteScreen> {
                       'tempPath': tempPath,
                     });
 
-                    if (!mounted) return;
                     if (ok == true) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('PDF salvato.')),
-                      );
+                      _showSnack(const SnackBar(content: Text('PDF salvato.')));
                     } else {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Operazione annullata.')),
-                      );
+                      _showSnack(const SnackBar(content: Text('Operazione annullata.')));
                     }
                   } catch (e) {
-                    if (!mounted) return;
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Errore salvataggio: $e')),
-                    );
+                    _showSnack(SnackBar(content: Text('Errore salvataggio: $e')));
                   }
                 },
               ),
@@ -656,33 +666,40 @@ class _DatiClienteScreenState extends State<DatiClienteScreen> {
     );
   }
 
+  // 🔧 FIX RegExp
   String _suggestedName(PreventivoBuilderProvider prov) {
-    final nomeCliente = prov.cliente?.ragioneSociale ?? 'cliente';
-    final nomeClienteSafe = nomeCliente.replaceAll(RegExp(r'[^A-Za-z0-9_\- ]'), '_');
-    final dataSafe = (prov.dataEvento ?? DateTime.now());
-    return 'preventivo_${nomeClienteSafe}_${DateFormat('yyyy-MM-dd').format(dataSafe)}.pdf';
+    final safeClient =
+        (prov.cliente?.ragioneSociale ?? 'cliente').replaceAll(RegExp(r'[^A-Za-z0-9 _-]'), '_');
+    final date = DateFormat('yyyy-MM-dd').format(prov.dataEvento ?? DateTime.now());
+    return 'preventivo_${safeClient}_$date.pdf';
   }
 
-  // ====================== (AGGIUNTO) CREA NUOVO CLIENTE ======================
   Future<void> _creaNuovoCliente() async {
     if (!_formKey.currentState!.validate()) return;
 
     setState(() {
-      _isProcessing = true;        // blocca tap multipli
-      _busyAction = 'create';      // mostra spinner sul bottone
+      _isProcessing = true;
+      _busyAction = 'create';
     });
-
-    final clientiProvider = Provider.of<ClientiProvider>(context, listen: false);
 
     try {
       final sw = Stopwatch()..start();
-      final nuovoCliente = await clientiProvider.creaNuovoContatto({
-        'tipo': 'cliente',
-        'ragione_sociale': _nomeClienteController.text,
-        'telefono_01': _telefonoController.text,
-        'mail': _emailController.text,
-        'ruolo': null,
-      });
+      Cliente? nuovoCliente;
+      try {
+        final dataToSave = Cliente(
+          idCliente: '',
+          tipo: 'cliente',
+          ragioneSociale: _nomeClienteController.text.trim(),
+          telefono01: _telefonoController.text.trim(),
+          mail: _emailController.text.trim().isNotEmpty ? _emailController.text.trim() : null,
+        ).toJson();
+
+        final docRef = await FirebaseFirestore.instance.collection('clienti').add(dataToSave);
+        final docSnapshot = await docRef.get();
+        nuovoCliente = Cliente.fromFirestore(docSnapshot);
+      } catch (e) {
+        print('Errore creazione cliente al volo: $e');
+      }
       sw.stop();
       _logUi('creaNuovoContatto ${sw.elapsedMilliseconds}ms (ok=${nuovoCliente != null})');
 
@@ -692,22 +709,15 @@ class _DatiClienteScreenState extends State<DatiClienteScreen> {
         _popolaCampiDalBuilder(prov);
         setState(() => _isNuovoCliente = false);
 
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Nuovo cliente creato con successo!'),
-            backgroundColor: Colors.green,
-          ),
-        );
+        _showSnack(const SnackBar(
+          content: Text('Nuovo cliente creato con successo!'),
+          backgroundColor: Colors.green,
+        ));
       } else if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Errore: ${clientiProvider.error}')),
-        );
+        _showSnack(const SnackBar(content: Text('Errore durante la creazione del nuovo cliente.')));
       }
     } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Errore: $e')),
-      );
+      _showSnack(SnackBar(content: Text('Errore: $e')));
       _logUi('create cliente error: $e');
     } finally {
       if (mounted) {
@@ -718,7 +728,6 @@ class _DatiClienteScreenState extends State<DatiClienteScreen> {
       }
     }
   }
-
 
   void _navigateBack(bool result) {
     if (!mounted) return;
@@ -743,7 +752,8 @@ class _DatiClienteScreenState extends State<DatiClienteScreen> {
     _accontoController.dispose();
     _nomeClienteFocusNode.dispose();
 
-    context.read<PreventiviProvider>().setEditingOpen(false);
+    // ❌ NIENTE lookup dal context in dispose
+    _preventiviProv?.setEditingOpen(false);
 
     super.dispose();
   }
@@ -751,6 +761,7 @@ class _DatiClienteScreenState extends State<DatiClienteScreen> {
   void _onTelefonoChanged(String telefono) {
     if (_debounce?.isActive ?? false) _debounce!.cancel();
     _debounce = Timer(const Duration(milliseconds: 700), () {
+      if (!mounted) return;
       if (telefono.length >= 6) {
         final clientiProvider = Provider.of<ClientiProvider>(context, listen: false);
         clientiProvider.cercaClientePerTelefono(telefono).then((cliente) {
@@ -768,7 +779,7 @@ class _DatiClienteScreenState extends State<DatiClienteScreen> {
           });
         });
       } else {
-        if (mounted) setState(() => _isNuovoCliente = false);
+        setState(() => _isNuovoCliente = false);
       }
     });
   }
@@ -794,12 +805,11 @@ class _DatiClienteScreenState extends State<DatiClienteScreen> {
     }
   }
 
-  // ===== FIRMA (doppia firma: Cliente + Pepe Rosa) =====
   Widget _buildConfermaCard(PreventivoBuilderProvider builder) {
     final hasId = (builder.preventivoId ?? '').isNotEmpty;
     if (!hasId) return const SizedBox.shrink();
 
-    final bool isConfermato = _isConfermatoDyn(builder);
+    final bool isConfermato = builder.status?.toLowerCase() == 'confermato';
 
     Widget _spinner() => const SizedBox(
           width: 18,
@@ -807,116 +817,110 @@ class _DatiClienteScreenState extends State<DatiClienteScreen> {
           child: CircularProgressIndicator(strokeWidth: 2),
         );
 
-// Sostituisci la vecchia funzione _acquisisciFirmaEConferma con questa
+    Future<void> _acquisisciFirmaEConferma() async {
+      if (_isProcessing) return;
 
-  Future<void> _acquisisciFirmaEConferma() async {
-    if (_isProcessing) return;
+      _aggiornaBuilderDaiController();
 
-    // Prima di procedere, salviamo eventuali modifiche non salvate nei campi.
-    _aggiornaBuilderDaiController();
-    
-    // Valida che il cliente sia stato selezionato.
-    if (builder.cliente == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Seleziona un cliente prima di confermare.')),
-        );
-        return;
-    }
-
-    // Se il preventivo è nuovo, deve essere salvato almeno una volta per avere un ID.
-    if ((builder.preventivoId ?? '').isEmpty) {
-      final salvataggioOk = await _salvaSuFirebase(popOnSuccess: false);
-      if (!salvataggioOk) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Salvataggio iniziale fallito. Impossibile procedere con la firma.')),
-        );
+      if (builder.cliente == null) {
+        _showSnack(const SnackBar(content: Text('Seleziona un cliente prima di confermare.')));
         return;
       }
-    }
 
-    // 1. Acquisizione firme (logica invariata)
-    final Uint8List? pngCliente = await showDialog<Uint8List?>(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => const FirmaDialog(title: 'Firma del cliente'),
-    );
-    if (pngCliente == null || pngCliente.isEmpty) return;
+      if ((builder.preventivoId ?? '').isEmpty) {
+        final salvataggioOk = await _salvaSuFirebase(popOnSuccess: false);
+        if (!salvataggioOk) {
+          _showSnack(const SnackBar(content: Text('Salvataggio iniziale fallito. Impossibile procedere con la firma.')));
+          return;
+        }
+      }
 
-    final Uint8List? pngRisto = await showDialog<Uint8List?>(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => const FirmaDialog(title: 'Firma Pepe Rosa'),
-    );
-    if (pngRisto == null || pngRisto.isEmpty) return;
-
-    setState(() {
-      _isProcessing = true;
-      _busyAction = 'firma';
-    });
-
-    try {
-      // 2. Composizione dell'immagine unica (logica invariata)
-      final headerText = 'Nettuno ${DateFormat('dd/MM/yyyy').format(DateTime.now())}';
-      final composed = await _composeDualSignaturePng(
-        firmaCliente: pngCliente,
-        firmaRistoratore: pngRisto,
-        headerText: headerText,
-        didascaliaSinistra: 'Firma Cliente',
-        didascaliaDestra: 'Firma Pepe Rosa',
-      );
-
-      final preventivoId = builder.preventivoId!;
-
-      // 3. UPLOAD SU FIREBASE STORAGE
-      // Usiamo il nostro nuovo StorageService per caricare l'immagine composta.
-      // Nota: il tuo codice compone le firme in una sola immagine, quindi carichiamo un solo file.
-      final firmaUrl = await _storageService.uploadSignature(
-        preventivoId,
-        composed,
-        'firma_composta.png',
-      );
-
-      // 4. AGGIORNAMENTO SU FIRESTORE
-      // Ora aggiorniamo direttamente il documento su Firestore con i nuovi dati.
-      await FirebaseFirestore.instance.collection('preventivi').doc(preventivoId).update({
-        'status': 'Confermato',
-        'data_conferma': Timestamp.now(),
-        'firma_url': firmaUrl, // Salviamo l'URL dell'immagine composta.
+      setState(() {
+        _isProcessing = true;
+        _busyAction = 'firma';
       });
-      
-      // Aggiorniamo anche lo stato nel provider per riflettere il cambiamento nella UI
-      builder.setStato('Confermato'); 
-      
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            isConfermato
-                ? 'Firme riacquisite e aggiornate con successo.'
-                : 'Preventivo confermato e firmato con successo!',
-          ),
-          backgroundColor: Colors.green,
-        ),
-      );
 
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
+      try {
+        final Uint8List? pngCliente = await showDialog<Uint8List?>(
+          context: context,
+          barrierDismissible: false,
+          builder: (_) => const FirmaDialog(title: 'Firma del cliente'),
+        );
+        if (pngCliente == null || pngCliente.isEmpty) {
+          if (mounted) setState(() { _isProcessing = false; _busyAction = null; });
+          return;
+        }
+
+        final Uint8List? pngRisto = await showDialog<Uint8List?>(
+          context: context,
+          barrierDismissible: false,
+          builder: (_) => const FirmaDialog(title: 'Firma Pepe Rosa'),
+        );
+        if (pngRisto == null || pngRisto.isEmpty) {
+          if (mounted) setState(() { _isProcessing = false; _busyAction = null; });
+          return;
+        }
+
+        final headerText = 'Nettuno ${DateFormat('dd/MM/yyyy').format(DateTime.now())}';
+        final composed = await _composeDualSignaturePng(
+          firmaCliente: pngCliente,
+          firmaRistoratore: pngRisto,
+          headerText: headerText,
+          didascaliaSinistra: 'Firma Cliente',
+          didascaliaDestra: 'Firma Pepe Rosa',
+          style: const SignatureParams(
+            padding: 24.0,
+            leftInset: 10.0,
+            rightInset: 90.0,
+            minGap: 800.0,
+            headerDownshift: 56.0,
+            headerFs: 48.0,   // <-- più grande
+            captionFs: 48.0,  // <-- più grande
+            maxSignH: 300.0,
+            captionsGap: 8.0,
+            headerExtraTop: 12.0,
+          ),
+        );
+
+
+        final preventivoId = builder.preventivoId!;
+
+        final firmaUrl = await _storageService.uploadSignature(
+          preventivoId,
+          composed,
+          'firma_composta.png',
+        );
+
+        await FirebaseFirestore.instance.collection('preventivi').doc(preventivoId).update({
+          'status': 'Confermato',
+          'data_conferma': Timestamp.now(),
+          'firma_url': firmaUrl,
+        });
+
+        builder.setStato('Confermato');
+
+        _showSnack(const SnackBar(
+          content: Text('Preventivo confermato e firmato con successo!'),
+          backgroundColor: Colors.green,
+        ));
+      } catch (e) {
+        _showSnack(SnackBar(
           content: Text('Errore durante la conferma: $e'),
           backgroundColor: Colors.red,
-        ),
-      );
-      _logUi('doppia-firma+conferma error: $e');
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isProcessing = false;
-          _busyAction = null;
-        });
+        ));
+        _logUi('doppia-firma+conferma error: $e');
+      } finally {
+        if (mounted) {
+          setState(() {
+            _isProcessing = false;
+            _busyAction = null;
+          });
+        }
       }
     }
-  }
+
+    final bool isProcessing = _isProcessing;
+    final bool isEnabled = !isConfermato && !isProcessing;
 
     return Card(
       child: Padding(
@@ -925,10 +929,18 @@ class _DatiClienteScreenState extends State<DatiClienteScreen> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             ElevatedButton.icon(
-              icon: (_busyAction == 'firma') ? _spinner() : const Icon(Icons.edit),
-              label: Text(
-                  isConfermato ? 'Riacquisisci firme (sostituisci)' : 'Acquisisci firma & Conferma'),
-              onPressed: _isProcessing ? null : _acquisisciFirmaEConferma,
+              icon: (isProcessing && _busyAction == 'firma') ? _spinner() : const Icon(Icons.edit),
+              label: Text(isConfermato ? 'Preventivo CONFERMATO (Disabilitato)' : 'Acquisisci firma & Conferma'),
+              onPressed: isEnabled ? _acquisisciFirmaEConferma : null,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: isConfermato
+                    ? Colors.grey.shade400
+                    : Theme.of(context).colorScheme.secondaryContainer,
+                foregroundColor: isConfermato
+                    ? Theme.of(context).colorScheme.onSurface
+                    : Theme.of(context).colorScheme.onSecondaryContainer,
+                disabledBackgroundColor: Colors.grey.shade400,
+              ),
             ),
           ],
         ),
@@ -936,33 +948,25 @@ class _DatiClienteScreenState extends State<DatiClienteScreen> {
     );
   }
 
-  /// Composizione del PNG con doppia firma:
-  /// - Etichette sopra le rispettive firme, allineate a sinistra
-  /// - Cliente a sinistra, Pepe Rosa a destra
-  /// - Distanza, font e posizioni governate da [SignatureParams]
   Future<Uint8List> _composeDualSignaturePng({
     required Uint8List firmaCliente,
     required Uint8List firmaRistoratore,
     required String headerText,
     required String didascaliaSinistra,
     required String didascaliaDestra,
-    SignatureParams? style, // opzionale: override a runtime
+    SignatureParams? style,
   }) async {
-    // Parametri “vivi” (vengono ricreati ad ogni chiamata)
     final p = style ?? defaultSignatureParams();
 
-    // Decode immagini
     final ui.Image imgC = await _decodeUiImage(firmaCliente);
     final ui.Image imgR = await _decodeUiImage(firmaRistoratore);
 
-    // Scale uniformi senza upscaling
     final double sC = math.min(p.maxSignH / imgC.height, 1.0);
     final double sR = math.min(p.maxSignH / imgR.height, 1.0);
     final double wC = imgC.width * sC, hC = imgC.height * sC;
     final double wR = imgR.width * sR, hR = imgR.height * sR;
     final double rowH = math.max(hC, hR);
 
-    // Header "Nettuno data"
     final headerTp = TextPainter(
       text: TextSpan(
         text: headerText,
@@ -976,7 +980,6 @@ class _DatiClienteScreenState extends State<DatiClienteScreen> {
       maxLines: 1,
     )..layout(maxWidth: double.infinity);
 
-    // Didascalie sopra le firme (allineate a sinistra della rispettiva firma)
     final capLeft = TextPainter(
       text: TextSpan(
         text: didascaliaSinistra,
@@ -1003,41 +1006,33 @@ class _DatiClienteScreenState extends State<DatiClienteScreen> {
       maxLines: 1,
     )..layout(maxWidth: wR);
 
-    // Larghezza minima per garantire gap e inset desiderati
     final double contentMinW = p.leftInset + wC + p.minGap + wR + p.rightInset;
     final double width = p.padding + contentMinW + p.padding;
 
-    // Altezze
     final double headerH = headerTp.height + p.headerExtraTop;
     final double captionsH = math.max(capLeft.height, capRight.height) + p.captionsGap;
     final double height =
         p.padding + headerH + p.headerDownshift + captionsH + rowH + p.padding;
 
-    // Canvas
     final recorder = ui.PictureRecorder();
     final canvas = ui.Canvas(recorder, ui.Rect.fromLTWH(0, 0, width, height));
     canvas.drawRect(
         ui.Rect.fromLTWH(0, 0, width, height), ui.Paint()..color = const ui.Color(0xFFFFFFFF));
 
-    // Header in alto a sinistra
     double y = p.padding;
     headerTp.paint(canvas, ui.Offset(p.padding, y));
     y += headerH + p.headerDownshift;
 
-    // Posizioni X: cliente a sinistra, Pepe Rosa a destra
     final double xLeft = p.padding + p.leftInset;
     final double xRight = width - p.padding - p.rightInset - wR;
 
-    // Etichette sopra e allineate a sinistra con la firma
     capLeft.paint(canvas, ui.Offset(xLeft, y));
     capRight.paint(canvas, ui.Offset(xRight, y));
     y += captionsH;
 
-    // Allineamento verticale firme
     final double yC = y + (rowH - hC) / 2.0;
     final double yR = y + (rowH - hR) / 2.0;
 
-    // Disegna firme
     canvas.drawImageRect(
       imgC,
       ui.Rect.fromLTWH(0, 0, imgC.width.toDouble(), imgC.height.toDouble()),
@@ -1057,90 +1052,6 @@ class _DatiClienteScreenState extends State<DatiClienteScreen> {
     return data!.buffer.asUint8List();
   }
 
-  // ----- (opzionali) helper legacy: non usati dalla composizione attuale, lasciati per compatibilità -----
-  double _sectionHeightEstimate(
-    ui.Image img,
-    TextStyle hdrStyle,
-    TextStyle lblStyle,
-    double totalW,
-    double pad,
-    double textGapSmall,
-    double textGapLarge,
-  ) {
-    // Stima altezza sezione: header + gap + label + gap + firma (senza upscaling)
-    final headerH = _measureTextHeight('X', hdrStyle, totalW - pad * 2);
-    final labelH = _measureTextHeight('X', lblStyle, totalW - pad * 2);
-    return headerH + textGapSmall + labelH + textGapLarge + img.height.toDouble();
-  }
-
-  Future<double> _drawSignatureSection({
-    required ui.Canvas canvas,
-    required double totalW,
-    required double startY,
-    required String header,
-    required String label,
-    required ui.Image image,
-    required double pad,
-    required double textGapSmall,
-    required double textGapLarge,
-    ui.Rect? area, // opzionale: area limitata (per layout orizzontale)
-  }) async {
-    final double left = area?.left ?? 0;
-    final double right = area != null ? area.right : totalW;
-    final double usableW = (right - left) - pad * 2;
-
-    // Header (es. "Nettuno 07/10/2025")
-    final headerH = _paintText(
-      canvas,
-      text: header,
-      style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w500, color: Colors.black),
-      maxWidth: usableW,
-      dx: left + pad,
-      dy: startY,
-    );
-
-    // Label ("Firma Cliente"/"Pepe Rosa")
-    final labelY = startY + headerH + textGapSmall;
-    final labelH = _paintText(
-      canvas,
-      text: label,
-      style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: Colors.black),
-      maxWidth: usableW,
-      dx: left + pad,
-      dy: labelY,
-    );
-
-    // Firma: centrata, no upscaling
-    final double y = labelY + labelH + textGapLarge;
-    final double scale = math.min(usableW / image.width, 1.0);
-    final double targetW = image.width * scale;
-    final double targetH = image.height * scale;
-    final double x = left + ((right - left) - targetW) / 2;
-
-    final ui.Rect src = ui.Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble());
-    final ui.Rect dst = ui.Rect.fromLTWH(x, y, targetW, targetH);
-    canvas.drawImageRect(image, src, dst, ui.Paint());
-
-    return (y + targetH) - startY;
-  }
-
-  // ----- Text helpers -----
-  double _paintText(ui.Canvas canvas,
-      {required String text,
-      required TextStyle style,
-      required double maxWidth,
-      required double dx,
-      required double dy}) {
-    final tp = TextPainter(
-      text: TextSpan(text: text, style: style),
-      textDirection: ui.TextDirection.ltr,
-      maxLines: 1,
-      ellipsis: '…',
-    )..layout(maxWidth: maxWidth);
-    tp.paint(canvas, ui.Offset(dx, dy));
-    return tp.height;
-  }
-
   double _measureTextHeight(String text, TextStyle style, double maxWidth) {
     final tp = TextPainter(
       text: TextSpan(text: text, style: style),
@@ -1156,7 +1067,6 @@ class _DatiClienteScreenState extends State<DatiClienteScreen> {
     return frame.image;
   }
 
-
   Widget _buildCardCercaCliente() {
     return ListTile(
       leading: const Icon(Icons.search),
@@ -1167,196 +1077,225 @@ class _DatiClienteScreenState extends State<DatiClienteScreen> {
   }
 
   @override
-    Widget build(BuildContext context) {
-      final prov = Provider.of<PreventivoBuilderProvider>(context, listen: true);
+  Widget build(BuildContext context) {
+    final prov = Provider.of<PreventivoBuilderProvider>(context, listen: true);
 
-      return Scaffold(
-        appBar: AppBar(
-          title: const Text('Completa Preventivo'),
-          // --- MODIFICHE APPLICATE QUI ---
-          actions: [
-            IconButton(
-              tooltip: 'Torna ai Preventivi',
-              icon: const Icon(Icons.inventory_2_outlined),
-              onPressed: () {
-                // Chiude tutte le schermate del wizard e torna alla home,
-                // poi apre l'archivio preventivi.
-                Navigator.of(context).popUntil((route) => route.isFirst);
-                Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ArchivioPreventiviScreen()));
-              },
-            ),
-            IconButton(
-              tooltip: 'Torna alla Home',
-              icon: const Icon(Icons.home_outlined),
-              onPressed: () {
-                // Chiude tutte le schermate del wizard e torna alla home.
-                Navigator.of(context).popUntil((route) => route.isFirst);
-              },
-            ),
-          ],
-        ),
-        body: Column(
-          children: [
-            WizardStepper(
-              currentStep: 2,
-              steps: const ['Menu', 'Servizi', 'Cliente'],
-              onStepTapped: (index) {
-                _aggiornaBuilderDaiController();
-                if (index == 1) {
-                  Navigator.of(context).pop();
-                } else if (index == 0) {
-                  Navigator.of(context).pop();
-                  Navigator.of(context).pop();
-                }
-              },
-            ),
-            const Divider(height: 1),
-            Expanded(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(16.0),
-                child: Form(
-                  key: _formKey,
-                  autovalidateMode:
-                      _autoValidate ? AutovalidateMode.always : AutovalidateMode.disabled,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      // Dati Cliente
-                      Card(
-                        child: Padding(
-                          padding: const EdgeInsets.all(16.0),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.stretch,
-                            children: [
-                              Text('Dati Cliente', style: Theme.of(context).textTheme.titleLarge),
-                              const SizedBox(height: 16),
-                              _buildCardCercaCliente(),
-                              const SizedBox(height: 16),
-                              TextFormField(
-                                focusNode: _nomeClienteFocusNode,
-                                controller: _nomeClienteController,
-                                decoration: const InputDecoration(
-                                  labelText: 'Nome Cliente / Ragione Sociale',
-                                  border: OutlineInputBorder(),
-                                ),
-                                validator: (value) {
-                                  if (value == null || value.trim().isEmpty) {
-                                    return 'Campo obbligatorio';
-                                  }
-                                  return null;
-                                },
-                              ),
-                              const SizedBox(height: 12),
-                              TextFormField(
-                                controller: _telefonoController,
-                                decoration: const InputDecoration(
-                                  labelText: 'Telefono Principale',
-                                  border: OutlineInputBorder(),
-                                ),
-                                keyboardType: TextInputType.phone,
-                                onChanged: _onTelefonoChanged,
-                              ),
-                              const SizedBox(height: 12),
-                              TextFormField(
-                                controller: _emailController,
-                                decoration: const InputDecoration(
-                                  labelText: 'Email (Opzionale)',
-                                  border: OutlineInputBorder(),
-                                ),
-                                keyboardType: TextInputType.emailAddress,
-                              ),
-                              const SizedBox(height: 16),
-                              ElevatedButton.icon(
-                                icon: (_busyAction == 'create')
-                                    ? const SizedBox(
-                                        width: 18,
-                                        height: 18,
-                                        child: CircularProgressIndicator(strokeWidth: 2),
-                                      )
-                                    : const Icon(Icons.person_add_alt_1),
-                                label: const Text('Crea e Seleziona Nuovo Cliente'),
-                                onPressed:
-                                    (_isNuovoCliente && !_isProcessing) ? () => _creaNuovoCliente() : null,
-                                style: ElevatedButton.styleFrom(
-                                  foregroundColor: Colors.white,
-                                  backgroundColor: Colors.green.shade600,
-                                  disabledBackgroundColor: Colors.grey.shade400,
-                                ),
-                              ),
-                              const SizedBox(height: 24),
-                            ],
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 24),
+    final String status = prov.status ?? 'Bozza';
+    final bool isConfermato = status.toLowerCase() == 'confermato';
+    final String statusText = status.toUpperCase();
 
-                      const SizedBox(height: 24),
-
-                      Card(
-                        child: Padding(
-                          padding: const EdgeInsets.all(16.0),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.stretch,
-                            children: [
-                              Text('Acconto', style: Theme.of(context).textTheme.titleLarge),
-                              const SizedBox(height: 12),
-                              TextFormField(
-                                controller: _accontoController,
-                                decoration: const InputDecoration(
-                                  labelText: 'Acconto',
-                                  prefixText: '€ ',
-                                  border: OutlineInputBorder(),
-                                ),
-                                keyboardType:
-                                    const TextInputType.numberWithOptions(decimal: true),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-
-                      const SizedBox(height: 24),
-
-                      // Card unica per acquisire firma & confermare
-                      _buildConfermaCard(prov),
-                      const SizedBox(height: 24),
-
-                      // Riepilogo costi
-                      Card(
-                        child: Padding(
-                          padding: const EdgeInsets.all(16.0),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text('Riepilogo costi', style: Theme.of(context).textTheme.titleLarge),
-                              const SizedBox(height: 8),
-                              Text('Menu Adulti: € ${prov.costoMenuAdulti.toStringAsFixed(2)}'),
-                              Text('Menu Bambini: € ${prov.costoMenuBambini.toStringAsFixed(2)}'),
-                              Text('Servizi Extra: € ${prov.costoServizi.toStringAsFixed(2)}'),
-                              const SizedBox(height: 4),
-                              Divider(color: Colors.grey.shade600),
-                              const SizedBox(height: 4),
-                              Text('Subtotale: € ${prov.subtotale.toStringAsFixed(2)}'),
-                              Text('Sconto: -€ ${prov.sconto.toStringAsFixed(2)}'),
-                              const SizedBox(height: 8),
-                              Text(
-                                'Totale Finale: € ${prov.totaleFinale.toStringAsFixed(2)}',
-                                style: Theme.of(context).textTheme.titleMedium,
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ],
+    final Widget statusChip = (prov.preventivoId ?? '').isNotEmpty
+        ? Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8.0),
+            child: Center(
+              child: Chip(
+                label: Text(
+                  statusText,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 12,
                   ),
+                ),
+                backgroundColor:
+                    isConfermato ? Colors.green.shade600 : Colors.red.shade600,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 0),
+              ),
+            ),
+          )
+        : const SizedBox.shrink();
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Completa Preventivo'),
+        actions: [
+          statusChip,
+          IconButton(
+            tooltip: 'Torna ai Preventivi',
+            icon: const Icon(Icons.inventory_2_outlined),
+            onPressed: () {
+              Navigator.of(context).popUntil((route) => route.isFirst);
+              Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const ArchivioPreventiviScreen()),
+              );
+            },
+          ),
+          IconButton(
+            tooltip: 'Torna alla Home',
+            icon: const Icon(Icons.home_outlined),
+            onPressed: () {
+              Navigator.of(context).popUntil((route) => route.isFirst);
+            },
+          ),
+        ],
+      ),
+      body: Column(
+        children: [
+          WizardStepper(
+            currentStep: 2,
+            steps: const ['Menu', 'Servizi', 'Cliente'],
+            onStepTapped: (index) {
+              _aggiornaBuilderDaiController();
+              if (index == 1) {
+                Navigator.of(context).pop();
+              } else if (index == 0) {
+                Navigator.of(context).pop();
+                Navigator.of(context).pop();
+              }
+            },
+          ),
+          const Divider(height: 1),
+          Expanded(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(16.0),
+              child: Form(
+                key: _formKey,
+                autovalidateMode:
+                    _autoValidate ? AutovalidateMode.always : AutovalidateMode.disabled,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Card(
+                      child: Padding(
+                        padding: const EdgeInsets.all(16.0),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Text('Dati Cliente',
+                                style: Theme.of(context).textTheme.titleLarge),
+                            const SizedBox(height: 16),
+                            _buildCardCercaCliente(),
+                            const SizedBox(height: 16),
+                            TextFormField(
+                              focusNode: _nomeClienteFocusNode,
+                              controller: _nomeClienteController,
+                              decoration: const InputDecoration(
+                                labelText: 'Nome Cliente / Ragione Sociale',
+                                border: OutlineInputBorder(),
+                              ),
+                              validator: (value) {
+                                if (value == null || value.trim().isEmpty) {
+                                  return 'Campo obbligatorio';
+                                }
+                                return null;
+                              },
+                            ),
+                            const SizedBox(height: 12),
+                            TextFormField(
+                              controller: _telefonoController,
+                              decoration: const InputDecoration(
+                                labelText: 'Telefono Principale',
+                                border: OutlineInputBorder(),
+                              ),
+                              keyboardType: TextInputType.phone,
+                              onChanged: _onTelefonoChanged,
+                            ),
+                            const SizedBox(height: 12),
+                            TextFormField(
+                              controller: _emailController,
+                              decoration: const InputDecoration(
+                                labelText: 'Email (Opzionale)',
+                                border: OutlineInputBorder(),
+                              ),
+                              keyboardType: TextInputType.emailAddress,
+                            ),
+                            const SizedBox(height: 16),
+                            ElevatedButton.icon(
+                              icon: (_busyAction == 'create')
+                                  ? const SizedBox(
+                                      width: 18,
+                                      height: 18,
+                                      child: CircularProgressIndicator(strokeWidth: 2),
+                                    )
+                                  : const Icon(Icons.person_add_alt_1),
+                              label: const Text('Crea e Seleziona Nuovo Cliente'),
+                              onPressed: (_isNuovoCliente && !_isProcessing)
+                                  ? () => _creaNuovoCliente()
+                                  : null,
+                              style: ElevatedButton.styleFrom(
+                                foregroundColor: Colors.white,
+                                backgroundColor: Colors.green.shade600,
+                                disabledBackgroundColor: Colors.grey.shade400,
+                              ),
+                            ),
+                            const SizedBox(height: 24),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                    const SizedBox(height: 24),
+                    Card(
+                      child: Padding(
+                        padding: const EdgeInsets.all(16.0),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Text('Acconto',
+                                style: Theme.of(context).textTheme.titleLarge),
+                            const SizedBox(height: 12),
+                            TextFormField(
+                              controller: _accontoController,
+                              decoration: const InputDecoration(
+                                labelText: 'Acconto',
+                                prefixText: '€ ',
+                                border: OutlineInputBorder(),
+                              ),
+                              keyboardType:
+                                  const TextInputType.numberWithOptions(decimal: true),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                    _buildConfermaCard(prov),
+                    const SizedBox(height: 24),
+                    Card(
+                      child: Padding(
+                        padding: const EdgeInsets.all(16.0),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('Riepilogo costi',
+                                style: Theme.of(context).textTheme.titleLarge),
+                            const SizedBox(height: 8),
+
+                            // 🔴 NUOVO: riga opzionale PRIMA di “Menù Adulti”
+                            if ((prov.costoPacchettoWelcomeDolci ?? 0) > 0)
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 4),
+                                child: Text(
+                                  '${prov.labelPacchettoWelcomeDolci}: € ${(prov.costoPacchettoWelcomeDolci).toStringAsFixed(2)}',
+                                ),
+                              ),
+
+                            Text('Menu Adulti: € ${prov.costoMenuAdulti.toStringAsFixed(2)}'),
+                            Text('Menu Bambini: € ${prov.costoMenuBambini.toStringAsFixed(2)}'),
+                            Text('Servizi Extra: € ${prov.costoServizi.toStringAsFixed(2)}'),
+                            const SizedBox(height: 4),
+                            Divider(color: Colors.grey.shade600),
+                            const SizedBox(height: 4),
+                            Text('Subtotale: € ${prov.subtotale.toStringAsFixed(2)}'),
+                            Text('Sconto: -€ ${prov.sconto.toStringAsFixed(2)}'),
+                            const SizedBox(height: 8),
+                            Text(
+                              'Totale Finale: € ${prov.totaleFinale.toStringAsFixed(2)}',
+                              style: Theme.of(context).textTheme.titleMedium,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),
-            _buildNavigationControls(),
-          ],
-        ),
-      );
-    }
+          ),
+          _buildNavigationControls(),
+        ],
+      ),
+    );
   }
-  
-
+}

@@ -43,10 +43,10 @@ class WizardStepper extends StatelessWidget {
                   child: Text(
                     steps[index],
                     style: TextStyle(
-                      // --- MODIFICA CHIAVE: Aumentata la dimensione del font ---
                       fontSize: isCurrent ? 22 : 16,
                       fontWeight: isCurrent ? FontWeight.bold : FontWeight.normal,
-                      color: isCompleted || isCurrent ? Colors.white : Colors.grey.shade600,
+                      // 👇 MODIFICA: passo corrente nero, altri grigi
+                      color: isCurrent ? Colors.black : Colors.grey.shade600,
                     ),
                   ),
                 ),

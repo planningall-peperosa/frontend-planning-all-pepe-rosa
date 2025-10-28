@@ -1,49 +1,72 @@
 // lib/providers/dipendenti_provider.dart
-// VERSIONE CON DEBUG AVANZATO PER L'UPDATE
 
 import 'package:flutter/material.dart';
-import '../models/dipendente.dart';
-import '../services/dipendenti_service.dart';
+import 'package:cloud_firestore/cloud_firestore.dart'; // Import cruciale per Firestore
+import '../models/cliente.dart'; // Usiamo il modello unificato Cliente
+// Rimuoviamo l'import di '../services/dipendenti_service.dart';
+// Rimuoviamo l'import di '../models/dipendente.dart';
 
 class DipendentiProvider with ChangeNotifier {
-  final DipendentiService _service = DipendentiService();
+  // 1. Istanza di Firestore e nome della collection
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final String _collectionName = 'dipendenti'; 
   
-  List<Dipendente> _dipendenti = [];
+  List<Cliente> _dipendenti = []; // Ora gestisce oggetti Cliente
   bool _isLoading = false;
   String? _error;
 
-  List<Dipendente> get dipendenti => _dipendenti;
+  List<Cliente> get dipendenti => _dipendenti;
   bool get isLoading => _isLoading;
   String? get error => _error;
+
+  // ----------------------------------------------------
+  // LOGICA READ (fetchDipendenti)
+  // ----------------------------------------------------
 
   Future<void> fetchDipendenti() async {
     _isLoading = true;
     _error = null;
     notifyListeners();
     try {
-      final data = await _service.getDipendenti();
-      _dipendenti = data.map((item) => Dipendente.fromJson(item)).toList();
+      final snapshot = await _firestore.collection(_collectionName).get();
+      // Mappiamo i documenti usando la factory Cliente.fromFirestore
+      _dipendenti = snapshot.docs.map((doc) => Cliente.fromFirestore(doc)).toList();
     } catch (e) {
-      _error = e.toString();
+      _error = "Errore nel caricamento dei dipendenti: ${e.toString()}";
     } finally {
       _isLoading = false;
       notifyListeners();
     }
   }
+
+  // ----------------------------------------------------
+  // LOGICA CREATE (addDipendente)
+  // ----------------------------------------------------
 
   Future<bool> addDipendente(Map<String, dynamic> data) async {
     _isLoading = true;
+    _error = null;
     notifyListeners();
     try {
-      final response = await _service.addDipendente(data);
-      if (response['statusCode'] == 201) {
-        await fetchDipendenti(); 
-        return true;
-      }
-      _error = response['body']?['detail'] ?? 'Errore sconosciuto dal server.';
-      return false;
+      // 1. Filtriamo i dati in input per evitare di salvare campi obsoleti/inutili
+      final payload = {
+          'tipo': 'dipendente', // Imposta il tipo fisso
+          'ragione_sociale': data['nome_dipendente'],
+          'ruolo': data['ruolo'],
+          'email': data['email'],
+          'telefono_01': data['telefono'],
+          'colore': data['colore'],
+          // PIN e Campi Extra sono omessi
+      };
+
+      // 2. Aggiungi a Firestore
+      await _firestore.collection(_collectionName).add(payload);
+      
+      // 3. Ricarica la lista per aggiornare l'UI
+      await fetchDipendenti(); 
+      return true;
     } catch (e) {
-      _error = e.toString();
+      _error = "Errore nell'aggiunta del dipendente: ${e.toString()}";
       return false;
     } finally {
       _isLoading = false;
@@ -51,67 +74,61 @@ class DipendentiProvider with ChangeNotifier {
     }
   }
 
-  // --- MODIFICA CHIAVE QUI ---
-  Future<bool> updateDipendente(String id, Map<String, dynamic> data) async {
-    try {
-      print("[DipendentiProvider] Tentativo di aggiornare dipendente ID: $id");
-      final response = await _service.updateDipendente(id, data);
-      
-      // Stampiamo sempre la risposta per il debug
-      print("[DipendentiProvider] Risposta dal server per l'update: StatusCode=${response['statusCode']}, Body=${response['body']}");
+  // ----------------------------------------------------
+  // LOGICA UPDATE (updateDipendente)
+  // ----------------------------------------------------
 
-      if (response['statusCode'] == 200) {
-        final index = _dipendenti.indexWhere((d) => d.idUnico == id);
-        if (index != -1) {
-            _dipendenti[index].nomeDipendente = data['nome_dipendente'] ?? _dipendenti[index].nomeDipendente;
-            _dipendenti[index].ruolo = data['ruolo'] ?? _dipendenti[index].ruolo;
-            _dipendenti[index].pin = data['pin'] ?? _dipendenti[index].pin;
-            _dipendenti[index].email = data['email'] ?? _dipendenti[index].email;
-            _dipendenti[index].telefono = data['telefono'] ?? _dipendenti[index].telefono;
-            _dipendenti[index].colore = data['colore'] ?? _dipendenti[index].colore;
-            
-            _dipendenti[index].campoExtra01 = data['campo_extra_01'] ?? _dipendenti[index].campoExtra01;
-            _dipendenti[index].campoExtra02 = data['campo_extra_02'] ?? _dipendenti[index].campoExtra02;
-            _dipendenti[index].campoExtra03 = data['campo_extra_03'] ?? _dipendenti[index].campoExtra03;
-            _dipendenti[index].campoExtra04 = data['campo_extra_04'] ?? _dipendenti[index].campoExtra04;
-            _dipendenti[index].campoExtra05 = data['campo_extra_05'] ?? _dipendenti[index].campoExtra05;
-            _dipendenti[index].campoExtra06 = data['campo_extra_06'] ?? _dipendenti[index].campoExtra06;
-            _dipendenti[index].campoExtra07 = data['campo_extra_07'] ?? _dipendenti[index].campoExtra07;
-            _dipendenti[index].campoExtra08 = data['campo_extra_08'] ?? _dipendenti[index].campoExtra08;
-            _dipendenti[index].campoExtra09 = data['campo_extra_09'] ?? _dipendenti[index].campoExtra09;
-            _dipendenti[index].campoExtra10 = data['campo_extra_10'] ?? _dipendenti[index].campoExtra10;
-            
-            notifyListeners();
-        }
-        return true;
-      } else {
-        // Se il server risponde con un errore, lo salviamo per poterlo leggere
-        _error = "Errore ${response['statusCode']}: ${response['body']?['detail'] ?? 'Nessun dettaglio'}";
-        print("[DipendentiProvider] Aggiornamento fallito. Errore: $_error");
-        return false;
-      }
+  Future<bool> updateDipendente(String id, Map<String, dynamic> data) async {
+    _isLoading = true;
+    _error = null;
+    notifyListeners();
+    try {
+      // 1. Filtriamo i dati in input per evitare di aggiornare campi obsoleti
+      final payload = {
+          'ragione_sociale': data['nome_dipendente'],
+          'ruolo': data['ruolo'],
+          'email': data['email'],
+          'telefono_01': data['telefono'],
+          'colore': data['colore'],
+          // Gli aggiornamenti dei campi extra e del PIN sono ignorati
+      };
+      
+      // 2. Aggiorna Firestore
+      await _firestore.collection(_collectionName).doc(id).update(payload);
+      
+      // 3. Ricarica la lista per aggiornare l'UI
+      await fetchDipendenti();
+      return true;
     } catch (e) {
-      _error = e.toString();
-      print("[DipendentiProvider] Eccezione catturata durante l'aggiornamento: $_error");
-      notifyListeners();
+      _error = "Errore nell'aggiornamento del dipendente: ${e.toString()}";
+      print("[DipendentiProvider] Aggiornamento fallito. Errore: $_error");
       return false;
+    } finally {
+      _isLoading = false;
+      notifyListeners();
     }
   }
-  // --- FINE MODIFICA ---
+
+  // ----------------------------------------------------
+  // LOGICA DELETE (deleteDipendente)
+  // ----------------------------------------------------
 
   Future<bool> deleteDipendente(String id) async {
+    _isLoading = true;
+    _error = null;
+    notifyListeners();
     try {
-      final response = await _service.deleteDipendente(id);
-      if (response['statusCode'] == 200) {
-        _dipendenti.removeWhere((d) => d.idUnico == id);
-        notifyListeners();
-        return true;
-      }
-      return false;
+      await _firestore.collection(_collectionName).doc(id).delete();
+      
+      // Ricarica la lista per aggiornare l'UI
+      await fetchDipendenti();
+      return true;
     } catch (e) {
-      _error = e.toString();
-      notifyListeners();
+      _error = "Errore nell'eliminazione del dipendente: ${e.toString()}";
       return false;
+    } finally {
+      _isLoading = false;
+      notifyListeners();
     }
   }
 }

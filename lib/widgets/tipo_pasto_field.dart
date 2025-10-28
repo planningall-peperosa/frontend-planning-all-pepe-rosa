@@ -20,7 +20,7 @@ class TipoPastoField extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text('Tipo pasto', style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 6),
+            const SizedBox(height: 16),
             Wrap(
               spacing: 8,
               children: [
@@ -28,11 +28,35 @@ class TipoPastoField extends StatelessWidget {
                   label: const Text('Pranzo'),
                   selected: selected == 'pranzo',
                   onSelected: (_) => builder.setTipoPasto('pranzo'),
+                  selectedColor: const Color.fromARGB(255, 255, 140, 211), // Rosa per il selezionato
+                  backgroundColor: Colors.white, // Bianco per non selezionato
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(20),
+                    side: BorderSide(
+                      color: selected == 'pranzo' ? const Color.fromARGB(255, 255, 140, 211) : Colors.grey.shade400,
+                    ),
+                  ),
+                  labelStyle: TextStyle(
+                    color: selected == 'pranzo' ? Colors.white : Colors.black87,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
                 ChoiceChip(
                   label: const Text('Cena'),
                   selected: selected == 'cena',
                   onSelected: (_) => builder.setTipoPasto('cena'),
+                  selectedColor: const Color.fromARGB(255, 255, 140, 211),
+                  backgroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(20),
+                    side: BorderSide(
+                      color: selected == 'cena' ? const Color.fromARGB(255, 255, 140, 211) : Colors.grey.shade400,
+                    ),
+                  ),
+                  labelStyle: TextStyle(
+                    color: selected == 'cena' ? Colors.white : Colors.black87,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
               ],
             ),
@@ -41,14 +65,15 @@ class TipoPastoField extends StatelessWidget {
                 padding: const EdgeInsets.only(top: 8),
                 child: Text(
                   'Seleziona Pranzo o Cena',
-                  style: TextStyle(
-                    color: Theme.of(context).colorScheme.error,
+                  style: const TextStyle(
+                    color: Colors.black,
                     fontSize: 12,
                   ),
                 ),
               ),
           ],
         );
+
       },
     );
   }

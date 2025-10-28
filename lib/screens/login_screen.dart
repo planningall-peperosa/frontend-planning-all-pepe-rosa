@@ -1,12 +1,14 @@
+// lib/screens/login_screen.dart
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/auth_provider.dart';
-import 'package:http/http.dart' as http;
-import 'dart:convert';
-import '../config/app_config.dart';
-import 'package:flutter/services.dart';
-
+import 'package:flutter/services.dart'; // Mantenuto per SystemNavigator
 import '../widgets/logo_widget.dart';
+
+// AGGIUNTE per stampe di debug e accesso a Firebase
+import 'package:flutter/foundation.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_auth/firebase_auth.dart' hide AuthProvider;
 
 class LoginScreen extends StatefulWidget {
   @override
@@ -14,103 +16,76 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  final _pinController = TextEditingController();
-  String? _selectedNome;
+  // 🚨 NUOVI CONTROLLER: Email (username) e Password (vecchio PIN)
+  final _emailController = TextEditingController();
+  final _passwordController = TextEditingController();
+
   bool _isLoading = false;
-  List<String> _nomiDipendenti = [];
-  bool _isLoadingNomi = true;
-  String? _erroreNomi;
 
   @override
   void initState() {
     super.initState();
-    _fetchNomiDipendenti();
-  }
-
-  Future<void> _fetchNomiDipendenti() async {
-    if (!mounted) return;
-    setState(() {
-      _isLoadingNomi = true;
-      _erroreNomi = null;
-    });
-    try {
-      final response =
-          await http.get(Uri.parse('${AppConfig.currentBaseUrl}/dipendenti'));
-      if (!mounted) return;
-
-      if (response.statusCode == 200) {
-        final dynamic decodedData = jsonDecode(response.body);
-        List<dynamic> dipendentiList;
-
-        if (decodedData is List) {
-          dipendentiList = decodedData;
-        } else if (decodedData is Map<String, dynamic>) {
-          if (decodedData.containsKey('dipendenti')) {
-            dipendentiList = decodedData['dipendenti'] as List<dynamic>;
-          } else if (decodedData.containsKey('data')) {
-            dipendentiList = decodedData['data'] as List<dynamic>;
-          } else {
-            throw Exception("Formato JSON non riconosciuto.");
-          }
-        } else {
-          throw Exception("Formato della risposta non valido.");
+    
+    // 🚨 AZIONE CHIAVE: Carica l'ultima email all'avvio
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+        final lastEmail = Provider.of<AuthProvider>(context, listen: false).lastUsedEmail;
+        if (lastEmail != null && lastEmail.isNotEmpty) {
+            _emailController.text = lastEmail;
         }
-
-        setState(() {
-          _nomiDipendenti = dipendentiList
-              .map((e) => e['nome_dipendente'].toString())
-              .toList();
-          if (_nomiDipendenti.isNotEmpty) {
-            _selectedNome = _nomiDipendenti[0];
-          }
-        });
-      } else {
-        setState(() {
-          _erroreNomi = "Errore caricamento nomi (${response.statusCode})";
-        });
-      }
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _erroreNomi = "Errore di rete: $e";
-      });
-    } finally {
-      if (!mounted) return;
-      setState(() {
-        _isLoadingNomi = false;
-      });
-    }
+    });
   }
+
 
   @override
   void dispose() {
-    _pinController.dispose();
+    // 🚨 MODIFICA: Dispose dei nuovi controller
+    _emailController.dispose();
+    _passwordController.dispose();
     super.dispose();
   }
 
   Future<void> _performLogin() async {
-    if (_selectedNome == null || _selectedNome!.isEmpty) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Seleziona il tuo nome')));
+    // 🚨 MODIFICA: Validazione Email e Password
+    final email = _emailController.text.trim();
+    final password = _passwordController.text;
+
+    if (email.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Inserisci l\'Email (o Nome Utente)')),
+      );
       return;
     }
-    if (_pinController.text.isEmpty) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Inserisci il PIN')));
+    if (password.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Inserisci la Password (o PIN)')),
+      );
       return;
     }
     if (!mounted) return;
+
     setState(() {
       _isLoading = true;
     });
 
     final authProvider = Provider.of<AuthProvider>(context, listen: false);
     try {
-      await authProvider.login(_selectedNome!, _pinController.text);
+      // 🚨 CHIAMATA MODIFICATA: Login con Email e Password
+      await authProvider.login(email, password);
+
+      // >>> STAMPE DI DEBUG SUBITO DOPO LOGIN RIUSCITA <<<
+      if (kDebugMode) {
+        final app = Firebase.app();
+        final user = FirebaseAuth.instance.currentUser;
+        debugPrint('[DEBUG] projectId=${app.options.projectId}');
+        debugPrint('[DEBUG] uid=${user?.uid}');
+        debugPrint('[DEBUG] email=${user?.email}');
+      }
+      // <<< FINE STAMPE >>>
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text(e.toString().replaceFirst("Exception: ", ""))));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(e.toString().replaceFirst("Exception: ", ""))),
+        );
       }
     } finally {
       if (mounted) {
@@ -123,9 +98,9 @@ class _LoginScreenState extends State<LoginScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // MODIFICA: Otteniamo il tema per usare i colori.
     final theme = Theme.of(context);
-    final inputTextStyle = TextStyle(color: theme.colorScheme.onSurface, fontSize: 18);
+    final inputTextStyle =
+        TextStyle(color: theme.colorScheme.onSurface, fontSize: 18);
 
     return Scaffold(
       body: Center(
@@ -134,84 +109,65 @@ class _LoginScreenState extends State<LoginScreen> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: <Widget>[
-              if (_isLoadingNomi)
-                Column(
-                  children: [
-                    CircularProgressIndicator(),
-                    SizedBox(height: 10),
-                    // MODIFICA: Colore testo preso dal tema per la visibilità.
-                    Text("Caricamento dipendenti...", style: TextStyle(color: theme.colorScheme.onBackground)),
-                  ],
-                )
-              else if (_erroreNomi != null)
-                Text(_erroreNomi!,
-                    // MODIFICA: Colore testo errore preso dal tema.
-                    style: TextStyle(color: theme.colorScheme.error, fontWeight: FontWeight.bold))
-              else
-                DropdownButtonFormField<String>(
-                  value: _selectedNome,
-                  isExpanded: true,
-                  decoration: InputDecoration(
-                    labelText: "Seleziona il tuo nome",
-                    filled: true,
-                    // MODIFICA: Colore sfondo preso dal tema.
-                    fillColor: theme.colorScheme.surface,
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(8.0),
-                    ),
-                  ),
-                  items: _nomiDipendenti
-                      .map((nome) => DropdownMenuItem<String>(
-                            value: nome,
-                            // MODIFICA: Colore testo preso dal tema.
-                            child: Text(nome, style: TextStyle(color: theme.colorScheme.onSurface)),
-                          ))
-                      .toList(),
-                  onChanged: (v) => setState(() => _selectedNome = v),
-                  // MODIFICA: Colore sfondo menu a tendina preso dal tema.
-                  dropdownColor: theme.colorScheme.surface,
-                ),
-              SizedBox(height: 20),
+              // --- CAMPO EMAIL (USERNAME) ---
               TextFormField(
-                controller: _pinController,
+                controller: _emailController,
                 style: inputTextStyle,
-                keyboardType: TextInputType.number,
+                keyboardType: TextInputType.emailAddress,
+                decoration: InputDecoration(
+                  labelText: "Email (Nome Utente)",
+                  //hintText: "es. mario.rossi@ristorante.it",
+                  filled: true,
+                  fillColor: theme.colorScheme.surface,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(8.0),
+                  ),
+                ),
+                onFieldSubmitted: (_) => _performLogin(),
+              ),
+
+              const SizedBox(height: 20),
+
+              // --- CAMPO PASSWORD (PIN) ---
+              TextFormField(
+                controller: _passwordController,
+                style: inputTextStyle,
+                keyboardType: TextInputType.visiblePassword,
                 obscureText: true,
                 obscuringCharacter: '●',
                 textAlign: TextAlign.center,
                 decoration: InputDecoration(
-                  labelText: 'PIN',
+                  labelText: 'Password (o PIN)',
                   filled: true,
-                  // MODIFICA: Colore sfondo preso dal tema.
                   fillColor: theme.colorScheme.surface,
-                   border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(8.0),
-                    ),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(8.0),
+                  ),
                 ),
                 onFieldSubmitted: (_) => _performLogin(),
               ),
-              SizedBox(height: 20),
+
+              const SizedBox(height: 20),
+
               _isLoading
-                  ? CircularProgressIndicator()
+                  ? const CircularProgressIndicator()
                   : Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        // Questi bottoni usano lo stile globale del tema.
                         ElevatedButton(
                           onPressed: _performLogin,
-                          child: Text('Login'),
+                          child: const Text('Login'),
                         ),
-                        SizedBox(width: 16),
+                        const SizedBox(width: 16),
                         OutlinedButton(
                           onPressed: () => SystemNavigator.pop(),
-                          child: Text('Esci'),
+                          child: const Text('Esci'),
                         ),
                       ],
                     ),
-              SizedBox(height: 36),
-              
-              LogoWidget(),
+              const SizedBox(height: 36),
 
+              const LogoWidget(),
             ],
           ),
         ),

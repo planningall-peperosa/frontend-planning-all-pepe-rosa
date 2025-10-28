@@ -87,7 +87,11 @@ class _DettaglioContattoScreenState extends State<DettaglioContattoScreen> {
       "ruolo": widget.contatto.ruolo,
     };
 
-    final contattoAggiornato = await provider.aggiornaContatto(widget.contatto.idCliente, data);
+    final contattoAggiornato = await provider.aggiornaContatto(
+    widget.contatto.idCliente, 
+    widget.contatto.tipo, // <-- ARGOMENTO MANCANTE AGGIUNTO QUI
+    data
+  );
 
     if (mounted) {
       if (contattoAggiornato != null) {

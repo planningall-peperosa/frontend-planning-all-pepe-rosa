@@ -1,5 +1,7 @@
 // lib/models/tipo_turno.dart
 
+import 'package:cloud_firestore/cloud_firestore.dart'; // Importa Firestore
+
 class TipoTurno {
   final String idTurno;
   String nomeTurno;
@@ -21,5 +23,13 @@ class TipoTurno {
       orarioInizio: json['orario_inizio'] ?? '',
       orarioFine: json['orario_fine'] ?? '',
     );
+  }
+  
+  // 🚨 NUOVA FACTORY: Traduttore da Firestore
+  factory TipoTurno.fromFirestore(DocumentSnapshot doc) {
+    final data = doc.data() as Map<String, dynamic>;
+    // Mappiamo l'ID del documento Firestore su idTurno
+    data['id_turno'] = doc.id;
+    return TipoTurno.fromJson(data);
   }
 }

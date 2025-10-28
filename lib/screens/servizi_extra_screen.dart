@@ -1,7 +1,7 @@
 // lib/screens/servizi_extra_screen.dart
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import 'package:provider/provider.dart'; // <-- MODIFICA CORRETTIVA QUI
+import 'package:provider/provider.dart'; 
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../models/servizio_selezionato.dart';
@@ -10,7 +10,9 @@ import '../models/fornitore_servizio.dart';
 import 'dati_cliente_screen.dart';
 import '../widgets/wizard_stepper.dart';
 
-import 'package:cloud_firestore/cloud_firestore.dart';
+// 🚨 AGGIUNTO: Import ClientiProvider
+import '../providers/clienti_provider.dart' ; 
+
 import 'archivio_preventivi_screen.dart';
 
 class ServiziExtraScreen extends StatefulWidget {
@@ -32,6 +34,7 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
   bool _isProcessing = false;
   String? _busyAction;
   
+  // 🚨 FUTURO: userà il provider corretto
   late Future<List<String>> _ruoliFuture;
 
   @override
@@ -44,6 +47,7 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
 
       _nomeEventoController.text = preventivoBuilder.nomeEvento ?? '';
       
+      // 🚨 CORREZIONE BUG OSPITI: Assicurati che l'int sia caricato correttamente
       final osp = preventivoBuilder.numeroOspiti ?? 0;
       _ospitiController.text = (osp > 0) ? osp.toString() : '';
 
@@ -62,23 +66,25 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
     });
   }
   
+  // 🚨 RIFATTORIZZATO: Usa ClientiProvider per i ruoli
   Future<List<String>> _caricaTuttiIRuoliDaFirestore() async {
+    final provider = context.read<ClientiProvider>();
     try {
-      final snapshot = await FirebaseFirestore.instance.collection('fornitori').get();
-      final ruoli = snapshot.docs
-          .map((doc) => doc.data()['ruolo'] as String?)
-          .whereType<String>()
-          .toSet()
+      await provider.fetchAllContacts(force: true);
+      
+      final ruoli = provider.tuttiContatti
+          .where((c) => c.tipo == 'fornitore' && c.ruolo != null)
+          .map((c) => c.ruolo!)
+          .toSet() 
           .toList();
       ruoli.sort();
       return ruoli;
     } catch (e) {
       // ignore: avoid_print
-      print("Errore caricamento ruoli: $e");
+      print("Errore caricamento ruoli fornitori: $e");
       return [];
     }
   }
-
 
   @override
   void dispose() {
@@ -146,7 +152,6 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
     }
   }
 
-
   Future<void> _gestisciSelezioneFornitore(String ruolo) async {
     final builder = Provider.of<PreventivoBuilderProvider>(context, listen: false);
     final fornitoreScelto = await _mostraDialogSelezioneFornitore(ruolo);
@@ -156,60 +161,56 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
   }
 
   Future<FornitoreServizio?> _mostraDialogSelezioneFornitore(String ruolo) async {
-    final fornitoriFuture = FirebaseFirestore.instance
-        .collection('fornitori')
-        .where('ruolo', isEqualTo: ruolo)
-        .get()
-        .then((snapshot) => snapshot.docs.map((doc) => FornitoreServizio.fromFirestore(doc)).toList());
+    // 🚨 ASSUMI che il ClienteProvider sia corretto e sia stato fetchato.
+    final provider = context.read<ClientiProvider>();
+    
+    // Filtra la lista completa dei contatti (già in memoria)
+    final List<FornitoreServizio> fornitori = provider.tuttiContatti
+        .where((c) => c.tipo == 'fornitore' && c.ruolo == ruolo)
+        .map((c) => FornitoreServizio( 
+            idContatto: c.idCliente,
+            ragioneSociale: c.ragioneSociale ?? 'N/A',
+            prezzo: c.prezzo,
+            // 🚨 CORREZIONE: Mappiamo i campi di contatto dal modello Cliente
+            telefono01: c.telefono01, 
+            mail: c.mail,
+            ruolo: c.ruolo, // Assumiamo che anche il ruolo sia utile
+        ))
+        .toList();
 
     return showDialog<FornitoreServizio>(
       context: context,
-      builder: (context) => FutureBuilder<List<FornitoreServizio>>(
-        future: fornitoriFuture,
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const SimpleDialog(
-              title: Text('Caricamento fornitori...'),
-              children: [Center(child: CircularProgressIndicator())],
-            );
-          }
-          if (snapshot.hasError) {
-            return SimpleDialog(
-              title: const Text('Errore'),
-              children: [SimpleDialogOption(child: Text('Impossibile caricare i fornitori: ${snapshot.error}'))],
-            );
-          }
-
-          final fornitori = snapshot.data ?? [];
-          
-          return SimpleDialog(
-            title: Text('Seleziona ${ruolo.replaceAll("_", " ")}'),
-            children: fornitori.isEmpty
-                ? [const SimpleDialogOption(child: Text("Nessun fornitore disponibile."))]
-                : fornitori
-                    .map(
-                      (fornitore) => SimpleDialogOption(
-                        onPressed: () => Navigator.pop(context, fornitore),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            Text(fornitore.ragioneSociale),
-                            if (fornitore.prezzo != null && fornitore.prezzo! > 0)
-                              Text('€${fornitore.prezzo!.toStringAsFixed(2)}',
-                                  style: const TextStyle(color: Colors.grey)),
-                          ],
-                        ),
+      builder: (context) {
+        
+        return SimpleDialog(
+          title: Text('Seleziona ${ruolo.replaceAll("_", " ")}'),
+          children: fornitori.isEmpty
+              ? [const SimpleDialogOption(child: Text("Nessun fornitore disponibile per questo ruolo."))]
+              : fornitori
+                  .map(
+                    (fornitore) => SimpleDialogOption(
+                      onPressed: () {
+                        // 🚨 DEBUG: Stampa l'oggetto prima di inviarlo al builder
+                        debugPrint('[DEBUG SOURCE] Fornitore selezionato: ${fornitore.toJson()}'); 
+                        Navigator.pop(context, fornitore);
+                      },
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(fornitore.ragioneSociale),
+                          if (fornitore.prezzo != null && fornitore.prezzo! > 0)
+                            Text('€${fornitore.prezzo!.toStringAsFixed(2)}',
+                                style: const TextStyle(color: Colors.grey)),
+                        ],
                       ),
-                    )
-                    .toList(),
-          );
-        },
-      ),
+                    ),
+                  )
+                  .toList(),
+        );
+      },
     );
   }
 
-
-  // --- NUOVA FUNZIONE DA AGGIUNGERE ---
   Future<void> _salvaSuFirebase() async {
     // Aggiorna il provider con gli ultimi dati inseriti nei campi di testo di questa schermata
     final builder = Provider.of<PreventivoBuilderProvider>(context, listen: false);
@@ -257,15 +258,46 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
     }
   }
 
-
   @override
   Widget build(BuildContext context) {
     return Consumer<PreventivoBuilderProvider>(
       builder: (context, preventivoBuilder, child) {
+        // --- LOGICA BADGE ---
+        final String status = preventivoBuilder.status ?? 'Bozza';
+        final bool isConfermato = status.toLowerCase() == 'confermato';
+        final String statusText = status.toUpperCase();
+
+        final Widget statusChip = (preventivoBuilder.preventivoId ?? '').isNotEmpty
+            ? Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8.0),
+                child: Center(
+                  child: Chip(
+                    label: Text(
+                      statusText,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 12,
+                      ),
+                    ),
+                    backgroundColor: isConfermato
+                        ? Colors.green.shade600
+                        : Colors.red.shade600,
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 0),
+                  ),
+                ),
+              )
+            : const SizedBox.shrink();
+
         return Scaffold(
           appBar: AppBar(
             title: const Text('Dati Evento e Servizi'),
             actions: [
+              // --- MODIFICA: BADGE STATUS (Primo elemento a destra) ---
+              statusChip,
+              // --------------------------------------------------------
+
               // --- NUOVI PULSANTI ---
               if (!_isProcessing)
                 IconButton(
@@ -309,6 +341,7 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
               ),
               const Divider(height: 1),
               Expanded(
+                // 🚨 CORREZIONE CRITICA: Il Form avvolge l'area di input, non l'intera schermata.
                 child: Form(
                   key: _formKey,
                   child: FutureBuilder<List<String>>(
@@ -323,7 +356,7 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
 
                        final ruoliDisponibili = snapshot.data ?? [];
 
-                      return ListView(
+                       return ListView(
                         padding: const EdgeInsets.all(16.0),
                         children: [
                           _buildDatiEventoSection(preventivoBuilder),
@@ -337,6 +370,7 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
                   ),
                 ),
               ),
+              // Barra di navigazione fissa in fondo
               _buildNavigationControls(),
             ],
           ),
@@ -345,56 +379,67 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
     );
   }
 
-
   Widget _buildNavigationControls() {
-    return Container(
-      padding: const EdgeInsets.all(16.0),
-      decoration: BoxDecoration(
-        color: Theme.of(context).scaffoldBackgroundColor,
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.1),
-            spreadRadius: 0,
-            blurRadius: 4,
-            offset: const Offset(0, -2),
-          ),
-        ],
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          ElevatedButton.icon(
-            icon: const Icon(Icons.arrow_back_ios),
-            label: const Text(
-              "Menu",
-              style: TextStyle(fontWeight: FontWeight.w700),
+    // 🚨 CORREZIONE: Avvolgiamo in Material per dare una Z-depth corretta (risolve il problema del tap in alto)
+    return Material(
+      elevation: 8, // Diamo una elevazione maggiore del BoxShadow precedente
+      child: Container(
+        padding: const EdgeInsets.all(16.0),
+        decoration: BoxDecoration(
+          color: Theme.of(context).scaffoldBackgroundColor,
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.1),
+              spreadRadius: 0,
+              blurRadius: 4,
+              offset: const Offset(0, -2),
             ),
-            onPressed: () {
-              Navigator.of(context).pop();
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.white,
-              foregroundColor: Colors.black87,
-              textStyle: const TextStyle(fontWeight: FontWeight.w700),
-              elevation: 0,
+          ],
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            // 🔹 Pulsante "Menu" ora con bordo coerente agli altri
+            ElevatedButton.icon(
+              icon: const Icon(Icons.arrow_back_ios),
+              label: const Text(
+                "           Menu                           ",
+                style: TextStyle(fontWeight: FontWeight.w700),
+              ),
+              onPressed: () {
+                Navigator.of(context).pop();
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.white,
+                foregroundColor: Colors.black87,
+                elevation: 0,
+                textStyle: const TextStyle(fontWeight: FontWeight.w700),
+                side: const BorderSide(color: Colors.black26, width: 1.2), // ✅ BORDO AGGIUNTO
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8), // coerente con gli altri pulsanti
+                ),
+              ),
             ),
-          ),
 
-
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
                 padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 24),
-                textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-            onPressed: _procediAiDatiCliente,
-            child: const Row(
-              children: [Text('Cliente'), SizedBox(width: 8), Icon(Icons.arrow_forward_ios)],
+                textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              ),
+              onPressed: _procediAiDatiCliente,
+              child: const Row(
+                children: [
+                  Text('Cliente'),
+                  SizedBox(width: 8),
+                  Icon(Icons.arrow_forward_ios),
+                ],
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
-
 
   Widget _buildDatiEventoSection(PreventivoBuilderProvider builder) {
     final numeroOspiti = builder.numeroOspiti ?? 0;
@@ -516,7 +561,6 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
     );
   }
 
-
   Widget _buildServiziExtraSection(
       List<String> allRuoli, PreventivoBuilderProvider builder) {
     
@@ -533,7 +577,8 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
       ...allRuoli.where((r) => !explicitOrder.contains(r)),
     ];
 
-    final serviziConNota = ['buffet di dolci', 'open bar'];
+    // ⚠️ MODIFICA: rimosso "buffet di dolci" (ora gestito in crea_preventivo_screen)
+    final serviziConNota = ['open bar'];
     final serviziSemplici = ['cream tart', 'confettata'];
 
     return Column(
@@ -550,7 +595,6 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
       ],
     );
   }
-
 
   Widget _buildServizioFornitoreRow(
       String ruolo, PreventivoBuilderProvider builder) {
@@ -624,8 +668,7 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
                         ),
                       ],
                     ),
-                    if (['allestimento', 'pasticceria', 'spettacolo pirotecnico'].contains(ruolo)) ...[
-                      const SizedBox(height: 8),
+                    const SizedBox(height: 8),
                       TextFormField(
                         initialValue: servizio!.note,
                         decoration: const InputDecoration(
@@ -634,7 +677,6 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
                         ),
                         onChanged: (value) => builder.setServizioNota(ruolo, value),
                       ),
-                    ],
                   ],
                 ),
               ),
@@ -724,11 +766,27 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
     final bambini = b.numeroBambini;
     final adulti = (ospiti - bambini).clamp(0, ospiti);
 
+    // ⚠️ NOVITÀ: costo pacchetto welcome+dolci (o singoli) e label da Provider
+    final double costoPacchetto = b.costoPacchettoWelcomeDolci; // 0, 5*ospiti, 8*ospiti, 10*ospiti
+    final bool mostraPacchetto = costoPacchetto > 0;
+    final String labelPacchetto = b.labelPacchettoWelcomeDolci ?? '';
+
+    final double subtotaleConPacchetto = b.subtotale + costoPacchetto;
+    final double totaleConPacchetto = subtotaleConPacchetto - b.sconto;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text("Riepilogo Costi", style: Theme.of(context).textTheme.titleLarge),
         const Divider(height: 24),
+
+        // 🔹 Riga opzionale PRIMA di "Menu Adulti"
+        if (mostraPacchetto)
+          ListTile(
+            title: Text(labelPacchetto, style: textStyle),
+            trailing: Text("€ ${costoPacchetto.toStringAsFixed(2)}", style: textStyle),
+          ),
+
         ListTile(
           title: Text("Menu Adulti ($adulti × € ${b.prezzoMenuAdulto.toStringAsFixed(2)})", style: textStyle),
           trailing: Text("€ ${b.costoMenuAdulti.toStringAsFixed(2)}", style: textStyle),
@@ -747,7 +805,7 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
         const Divider(),
         ListTile(
           title: Text("Subtotale", style: totalStyle),
-          trailing: Text("€ ${b.subtotale.toStringAsFixed(2)}", style: totalStyle),
+          trailing: Text("€ ${subtotaleConPacchetto.toStringAsFixed(2)}", style: totalStyle),
         ),
         CheckboxListTile(
           title: const Text("Applica Sconto"),
@@ -783,7 +841,7 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
           title: Text("TOTALE FINALE",
               style: totalStyle?.copyWith(
                   color: Colors.black)),
-          trailing: Text("€ ${b.totaleFinale.toStringAsFixed(2)}",
+          trailing: Text("€ ${totaleConPacchetto.toStringAsFixed(2)}",
               style: totalStyle?.copyWith(
                   color: Colors.black)),
         ),

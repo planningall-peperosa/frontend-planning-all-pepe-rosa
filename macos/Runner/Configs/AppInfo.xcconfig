@@ -5,10 +5,13 @@
 // 'flutter create' template.
 
 // The application's name. By default this is also the title of the Flutter window.
-PRODUCT_NAME = test_fotocamera_2
+PRODUCT_NAME = fic_frontend
 
 // The application's bundle identifier
-PRODUCT_BUNDLE_IDENTIFIER = com.example.testFotocamera2
+PRODUCT_BUNDLE_IDENTIFIER = com.peperosa.ficFrontend
 
 // The copyright displayed in application information
-PRODUCT_COPYRIGHT = Copyright © 2025 com.example. All rights reserved.
+PRODUCT_COPYRIGHT = Copyright © 2025 com.peperosa. All rights reserved.
+
+MACOSX_DEPLOYMENT_TARGET = 10.15
+

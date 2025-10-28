@@ -5,6 +5,11 @@ import 'dart:convert';
 import 'dart:async';
 import '../config/app_config.dart';
 
+// 🚨 NUOVI IMPORT PER FIREBASE AUTH, FIRESTORE e SHARED PREFERENCES
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:shared_preferences/shared_preferences.dart'; // Per salvare l'ultima email
+
 class AutorizzazioneApp {
   final String nome;
   final int stato;
@@ -31,38 +36,124 @@ class AutorizzazioneApp {
 
 
 class AuthProvider extends ChangeNotifier {
+  // Configurazione Firebase
+  final FirebaseAuth _auth = FirebaseAuth.instance;
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+
+  // Stato e Dettagli Utente
   bool _isAuthenticated = false;
-  String? _user;
-  String? _pinFornitoAlLogin;
+  // 🚨 NUOVO CAMPO: Per sapere quando lo stato iniziale è stato caricato
+  bool _isAuthReady = false; 
+  String? _user; 
+  String? _pinFornitoAlLogin; 
   String? _userRuolo;
-  String? _idUnico;
+  String? _idUnico; 
   String? _nomeDipendente;
 
+  // 🚨 NUOVO CAMPO: Ultima email usata
+  String? _lastUsedEmail;
+  static const String _lastEmailKey = 'last_login_email';
+
+  // Stato Loading Legacy
+  String get _baseUrl => AppConfig.currentBaseUrl;
+  bool _isLoading = false;
+
+  // Autorizzazioni Legacy
+  List<AutorizzazioneApp> _autorizzazioniApp = [];
+  Map<String, dynamic>? lastLoginResponseData;
+  List<String> _funzioniAutorizzate = [];
+
+  // Getters
   bool get isAuthenticated => _isAuthenticated;
+  // 🚨 NUOVO GETTER
+  bool get isAuthReady => _isAuthReady;
   String? get user => _user;
   String? get pinFornitoAlLogin => _pinFornitoAlLogin;
   String? get userRuolo => _userRuolo;
   String? get idUnico => _idUnico;
   String? get nomeDipendente => _nomeDipendente;
-
-  String get _baseUrl => AppConfig.currentBaseUrl;
-
-  bool _isLoading = false;
   bool get isLoading => _isLoading;
-
-  List<AutorizzazioneApp> _autorizzazioniApp = [];
   List<AutorizzazioneApp> get autorizzazioniApp => _autorizzazioniApp;
-
-  Map<String, dynamic>? lastLoginResponseData;
-
-  List<String> _funzioniAutorizzate = [];
   List<String> get funzioniAutorizzate => List.unmodifiable(_funzioniAutorizzate);
+  String? get lastUsedEmail => _lastUsedEmail;
+
+
+  // 🚨 MODIFICA COSTRUTTORE: Avvia il listener e gestisce _isAuthReady
+  AuthProvider() {
+    _loadLastUsedEmail();
+    
+    // LISTENER: Usa listen per catturare il primo stato
+    _auth.authStateChanges().listen((User? firebaseUser) async {
+      if (firebaseUser != null) {
+        // Utente autenticato, carichiamo i dettagli (ruolo) da Firestore
+        await _loadUserDetails(firebaseUser);
+      } else {
+        // Utente disconnesso
+        logout(silent: true);
+      }
+      // 🚨 FONDAMENTALE: Imposta isAuthReady a true DOPO il primo evento
+      if (!_isAuthReady) {
+        _isAuthReady = true;
+        notifyListeners();
+      }
+    });
+  }
+
+  // 🚨 NUOVO METODO: Carica l'ultima email salvata
+  Future<void> _loadLastUsedEmail() async {
+    final prefs = await SharedPreferences.getInstance();
+    _lastUsedEmail = prefs.getString(_lastEmailKey);
+    notifyListeners();
+  }
+
+  // 🚨 NUOVO METODO: Salva l'email in caso di successo
+  Future<void> _saveLastUsedEmail(String email) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_lastEmailKey, email.trim());
+    _lastUsedEmail = email.trim();
+  }
+
+
+  // Helper per caricare i dettagli da Firestore
+  Future<void> _loadUserDetails(User firebaseUser) async {
+    try {
+      final userDoc = await _firestore.collection('users').doc(firebaseUser.uid).get();
+
+      // 🚨 CRITICO: Se il documento utente non esiste in Firestore, neghiamo l'accesso.
+      if (!userDoc.exists) {
+        throw Exception('Dettagli utente non trovati su Firestore. Accesso negato.');
+      }
+
+      final data = userDoc.data()!;
+      
+      _isAuthenticated = true;
+      _user = firebaseUser.email; 
+      _idUnico = firebaseUser.uid; 
+      _userRuolo = (data['ruolo'] ?? 'dipendente').toString().toLowerCase().trim();
+      _nomeDipendente = data['nome_display'] ?? firebaseUser.email?.split('@').first;
+
+      // Aggiorniamo le autorizzazioni
+      if (_userRuolo != "admin") {
+        await _fetchAutorizzazioniMenu(); 
+      } else {
+        _funzioniAutorizzate.clear();
+      }
+      
+    } catch (e) {
+      print('[AuthProvider] Errore caricamento dettagli/ruolo da Firestore: $e');
+      logout(silent: true);
+    } finally {
+      notifyListeners();
+    }
+  }
+
 
   bool isFunzioneAutorizzata(String nomeFunzione) {
     if (_userRuolo == 'admin') return true;
     return _funzioniAutorizzate.contains(nomeFunzione);
   }
 
+  // Mantenuto per la logica di autorizzazione (Legacy)
   Future<void> _fetchAutorizzazioniMenu() async {
     _funzioniAutorizzate.clear();
     if (_userRuolo == 'admin') {
@@ -104,60 +195,50 @@ class AuthProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> login(String nomeDipendente, String pin) async {
+  // 🚨 MODIFICA CRITICA: Login con Firebase Email/Password
+  Future<void> login(String email, String password) async {
     _isLoading = true;
     notifyListeners();
 
     try {
-      final response = await http.post(
-        Uri.parse('$_baseUrl/authenticate'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'nome_dipendente': nomeDipendente, 'pin': pin}),
-      ).timeout(Duration(seconds: 10));
+      final UserCredential userCredential = await _auth.signInWithEmailAndPassword(
+        email: email,
+        password: password, 
+      ).timeout(const Duration(seconds: 10));
 
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        if (data['authenticated'] == true) {
-          final String returnedNome = data['dipendente']?['nome_dipendente'] ?? '';
-
-          if (returnedNome != nomeDipendente) {
-            throw Exception('PIN non corretto per l\'utente selezionato.');
-          }
-
-          _isAuthenticated = true;
-          _user = data['dipendente']?['nome_dipendente'] ?? '';
-          _userRuolo = (data['dipendente']?['ruolo'] ?? '').toString().toLowerCase().trim();
-          _pinFornitoAlLogin = pin;
-          lastLoginResponseData = data;
-          _idUnico = data['dipendente']?['id_unico']?.toString() ?? '';
-          _nomeDipendente = data['dipendente']?['nome_dipendente'] ?? '';
-          
-          if (_userRuolo != "admin") {
-            await _fetchAutorizzazioniMenu();
-          } else {
-            _funzioniAutorizzate.clear();
-          }
-        } else {
-          throw Exception(data['message'] ?? 'PIN non valido o utente non riconosciuto.');
-        }
+      // 🚨 AZIONE CHIAVE: Salva l'email solo se il login Firebase ha successo
+      await _saveLastUsedEmail(email); 
+      
+      // La fase di autorizzazione (caricamento dettagli utente) è gestita automaticamente dal listener
+      
+    } on FirebaseAuthException catch (e) {
+      logout(silent: true);
+      String message;
+      if (e.code == 'user-not-found' || e.code == 'wrong-password' || e.code == 'invalid-credential') {
+        message = 'Email o Password (PIN) non validi.';
       } else {
-        String errorMessage = 'Errore di autenticazione dal server.';
-        try {
-          final data = jsonDecode(response.body);
-          errorMessage = data['detail'] ?? data['message'] ?? errorMessage;
-        } catch (_) {}
-        throw Exception(errorMessage);
+        message = 'Errore di autenticazione: ${e.message}';
       }
+      throw Exception(message);
+      
     } catch (e) {
-      logout();
-      rethrow;
+      logout(silent: true);
+      throw Exception('Errore di rete o imprevisto: $e');
     } finally {
       _isLoading = false;
       notifyListeners();
     }
   }
 
-  void logout() {
+  // 🚨 MODIFICA: Logout con Firebase Auth
+  void logout({bool silent = false}) async {
+    try {
+      await _auth.signOut();
+    } catch (e) {
+      print('[AuthProvider] Errore durante il logout Firebase: $e');
+    }
+    
+    // Aggiornamento dello stato locale
     _isAuthenticated = false;
     _user = null;
     _userRuolo = null;
@@ -166,6 +247,9 @@ class AuthProvider extends ChangeNotifier {
     _nomeDipendente = null;
     _funzioniAutorizzate.clear();
     lastLoginResponseData = null;
-    notifyListeners();
+    
+    if (!silent) {
+      notifyListeners();
+    }
   }
 }

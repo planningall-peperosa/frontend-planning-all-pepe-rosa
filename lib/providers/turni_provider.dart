@@ -1,11 +1,15 @@
 // lib/providers/turni_provider.dart
 
 import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart'; // Import cruciale
 import '../models/tipo_turno.dart';
-import '../services/turni_service.dart';
+// Rimuoviamo l'import di '../services/turni_service.dart';
 
 class TurniProvider with ChangeNotifier {
-  final TipiTurnoService _service = TipiTurnoService();
+  // 1. Istanza di Firestore e nome della collection
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final String _collectionName = 'tipi_turno'; 
+
   List<TipoTurno> _tipiTurno = [];
   bool _isLoading = false;
   String? _error;
@@ -14,52 +18,95 @@ class TurniProvider with ChangeNotifier {
   bool get isLoading => _isLoading;
   String? get error => _error;
 
+  // ----------------------------------------------------
+  // LOGICA READ (fetchTipiTurno)
+  // ----------------------------------------------------
+
   Future<void> fetchTipiTurno() async {
     _isLoading = true;
     _error = null;
     notifyListeners();
     try {
-      final data = await _service.getTipiTurno();
-      _tipiTurno = data.map((item) => TipoTurno.fromJson(item)).toList();
+      final snapshot = await _firestore.collection(_collectionName).get();
+      // Mappiamo i documenti usando la factory TipoTurno.fromFirestore (che aggiungeremo)
+      _tipiTurno = snapshot.docs.map((doc) => TipoTurno.fromFirestore(doc)).toList();
     } catch (e) {
-      _error = e.toString();
+      _error = "Errore nel caricamento dei tipi turno: ${e.toString()}";
     } finally {
       _isLoading = false;
       notifyListeners();
     }
   }
 
+  // ----------------------------------------------------
+  // LOGICA CREATE (addTipoTurno)
+  // ----------------------------------------------------
+
   Future<bool> addTipoTurno(Map<String, dynamic> data) async {
-    final response = await _service.addTipoTurno(data);
-    if (response['statusCode'] == 201) {
+    _isLoading = true;
+    _error = null;
+    notifyListeners();
+    try {
+      // 1. Aggiungi a Firestore
+      await _firestore.collection(_collectionName).add(data);
+      
+      // 2. Ricarica la lista per aggiornare l'UI
       await fetchTipiTurno();
       return true;
+    } catch (e) {
+      _error = "Errore nell'aggiunta del tipo turno: ${e.toString()}";
+      return false;
+    } finally {
+      _isLoading = false;
+      notifyListeners();
     }
-    return false;
   }
+
+  // ----------------------------------------------------
+  // LOGICA UPDATE (updateTipoTurno)
+  // ----------------------------------------------------
 
   Future<bool> updateTipoTurno(String id, Map<String, dynamic> data) async {
-    final statusCode = await _service.updateTipoTurno(id, data);
-    if (statusCode == 200) {
-      final index = _tipiTurno.indexWhere((t) => t.idTurno == id);
-      if (index != -1) {
-        _tipiTurno[index].nomeTurno = data['nome_turno'] ?? _tipiTurno[index].nomeTurno;
-        _tipiTurno[index].orarioInizio = data['orario_inizio'] ?? _tipiTurno[index].orarioInizio;
-        _tipiTurno[index].orarioFine = data['orario_fine'] ?? _tipiTurno[index].orarioFine;
-        notifyListeners();
-      }
+    _isLoading = true;
+    _error = null;
+    notifyListeners();
+    try {
+      // 1. Aggiorna Firestore
+      await _firestore.collection(_collectionName).doc(id).update(data);
+      
+      // 2. Ricarica la lista per aggiornare l'UI
+      await fetchTipiTurno();
       return true;
+    } catch (e) {
+      _error = "Errore nell'aggiornamento del tipo turno: ${e.toString()}";
+      return false;
+    } finally {
+      _isLoading = false;
+      notifyListeners();
     }
-    return false;
   }
 
+  // ----------------------------------------------------
+  // LOGICA DELETE (deleteTipoTurno)
+  // ----------------------------------------------------
+
   Future<bool> deleteTipoTurno(String id) async {
-    final statusCode = await _service.deleteTipoTurno(id);
-    if (statusCode == 200) {
-      _tipiTurno.removeWhere((t) => t.idTurno == id);
-      notifyListeners();
+    _isLoading = true;
+    _error = null;
+    notifyListeners();
+    try {
+      // 1. Elimina da Firestore
+      await _firestore.collection(_collectionName).doc(id).delete();
+      
+      // 2. Ricarica la lista per aggiornare l'UI
+      await fetchTipiTurno();
       return true;
+    } catch (e) {
+      _error = "Errore nell'eliminazione del tipo turno: ${e.toString()}";
+      return false;
+    } finally {
+      _isLoading = false;
+      notifyListeners();
     }
-    return false;
   }
 }
