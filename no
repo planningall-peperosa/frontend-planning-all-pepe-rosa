@@ -1,0 +1,62 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "preventivi",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "data_evento",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "data_creazione",
+          "order": "DESCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "DESCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "preventivi",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "data_evento",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "preventivi",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "data_evento",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    }
+  ],
+  "fieldOverrides": []
+}

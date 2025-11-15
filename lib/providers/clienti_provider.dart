@@ -17,11 +17,13 @@ class ClientiProvider extends ChangeNotifier {
   
   List<String> _ruoliServizi = [
     'Pasticceria', 
-    'Fiorista', 
-    'Allestimento',
+    'Allestimento floreale', 
+    'Allestimento e palloncini',
     'Fotografo', 
     'Musica', 
     'DJ', 
+    'Spettacolo pirotecnico',
+    'Assistente bagnanti',
     'Location', 
     'Tovagliato',
     'Fornitore alimentare',

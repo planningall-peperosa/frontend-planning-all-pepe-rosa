@@ -1,8 +1,10 @@
 // lib/providers/preventivo_builder_provider.dart
+
 import 'dart:convert';
 import 'package:intl/intl.dart';
 import 'package:flutter/foundation.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/material.dart';
 
 import '../models/cliente.dart';
 import '../models/piatto.dart';
@@ -12,8 +14,7 @@ import '../models/preventivo_completo.dart';
 import '../models/fornitore_servizio.dart';
 import '../services/preventivi_service.dart';
 import '../models/preventivo_summary.dart';
-
-import '../models/preventivo.dart';
+import '../models/pacchetto_evento.dart';
 
 // --- LOG helper ---
 void _logBuilder(String msg) {
@@ -23,6 +24,30 @@ void _logBuilder(String msg) {
   }
 }
 
+// ====== LOGGING STRUTTURATO (aggiuntivo) ======
+final _prettyBuilder = const JsonEncoder.withIndent('  ');
+void dlogBuilder(String tag, Object? data) {
+  if (!kDebugMode) return;
+  if (data is Map || data is List) {
+    // ignore: avoid_print
+    print('[BUILDER][$tag] ${_prettyBuilder.convert(data)}');
+  } else {
+    // ignore: avoid_print
+    print('[BUILDER][$tag] $data');
+  }
+}
+
+// Hash leggero (solo per confronto in log)
+String jhashBuilder(Object? data) {
+  try {
+    final s = jsonEncode(data);
+    return s.hashCode.toUnsigned(20).toRadixString(16);
+  } catch (_) {
+    return '0';
+  }
+}
+// =============================================
+
 class PreventivoBuilderProvider with ChangeNotifier {
   final PreventiviService _preventiviService = PreventiviService();
 
@@ -31,6 +56,9 @@ class PreventivoBuilderProvider with ChangeNotifier {
   String? _nomeEvento;
   DateTime? _dataEvento;
   int? _numeroOspiti;
+
+  // --- NOTE INTEGRATIVE (debug + persistenza) ---
+  String _noteIntegrative = '';
 
   // --- MODIFICA: RINOMINATO PER CHIAREZZA ---
   int _numeroBambini = 0;
@@ -53,6 +81,11 @@ class PreventivoBuilderProvider with ChangeNotifier {
   double? _acconto;
 
   String? _tipoPasto;
+  
+  // ===================== 🟢 NUOVI CAMPI ORARI 🟢 =====================
+  TimeOfDay? _orarioInizio;
+  TimeOfDay? _orarioFine;
+  // ===================================================================
 
   bool _isSaving = false;
   String? _erroreSalvataggio;
@@ -61,18 +94,45 @@ class PreventivoBuilderProvider with ChangeNotifier {
   bool _hydrating = false;
   String? _baselineJson;
 
-  // ===================== NUOVI CAMPI RICHIESTI =====================
+  // ===================== CAMPI ESISTENTI (MENU A PORTATE) =====================
   bool _aperitivoBenvenuto = false;
   bool _buffetDolci = false;
   String? _buffetDolciNote;
-  // ================================================================
+  
+  // 🔑 CAMPI FIRMA AGGIUNTI NEL PROVIDER
+  String? _firmaUrl; 
+  String? _firmaUrlCliente2; 
+  
+  // ===================== 🟢 NUOVI CAMPI (PACCHETTO FISSO) 🟢 =====================
+  bool _isPacchettoFisso = false;
+  String? _nomePacchettoFisso;
+  String? _descrizionePacchettoFisso;
+  String? _descrizionePacchettoFisso2; // 🚨 AGGIUNTO
+  String? _descrizionePacchettoFisso3; // 🚨 AGGIUNTO
+  double _prezzoPacchettoFisso = 0.0;
+  String? _propostaGastronomicaPacchetto; // 🌟 NUOVO CAMPO
+  // ==============================================================================
 
   // =======================================================================
   // --- NUOVI METODI DI TRADUZIONE PER FIRESTORE (AGGIORNATI) ---
   // =======================================================================
 
   void caricaDaFirestoreMap(Map<String, dynamic> data, {String? id}) {
+    print('[DEBUG][caricaDaFirestoreMap] IN: keys=' + data.keys.toString());
+    print('[DEBUG][caricaDaFirestoreMap] IN: note_integrative=' + (data['note_integrative']?.toString() ?? 'null'));
     _hydrating = true;
+    print('--- TRACCIA: INIZIO caricaDaFirestoreMap ---'); 
+
+    // 🔍 Log IN ingresso
+    dlogBuilder('PROV:carica.in', {
+      'id': id,
+      'hash': jhashBuilder(data),
+      'fields': data.keys.toList(),
+      'descr1': data['descrizione_1'],
+      'descr2': data['descrizione_2'],
+      'descr3': data['descrizione_3'],
+      'extra.len': (data['servizi_extra'] as List?)?.length ?? 0,
+    });
 
     reset();
     _hydrating = true;
@@ -96,12 +156,51 @@ class PreventivoBuilderProvider with ChangeNotifier {
     _menuBambini = data['menu_bambini'];
     _dataEvento = (data['data_evento'] as Timestamp?)?.toDate();
     _dataCreazione = (data['data_creazione'] as Timestamp?)?.toDate();
+    
+    // 🟢 LETTURA ORARI
+    final int? hI = data['orario_inizio_h'] as int?;
+    final int? mI = data['orario_inizio_m'] as int?;
+    _orarioInizio = (hI != null && mI != null) ? TimeOfDay(hour: hI, minute: mI) : null;
 
-    // ===================== LETTURA NUOVI CAMPI =====================
+    final int? hF = data['orario_fine_h'] as int?;
+    final int? mF = data['orario_fine_m'] as int?;
+    _orarioFine = (hF != null && mF != null) ? TimeOfDay(hour: hF, minute: mF) : null;
+    // ==================
+
+    // 🔑 CORREZIONE CHIAVE: Leggi gli URL delle firme
+    _firmaUrl = data['firma_url'] as String?;
+    _firmaUrlCliente2 = data['firma_url_cliente_2'] as String?; // <-- URL Seconda Firma
+    
+    // ===================== LETTURA CAMPI ESISTENTI (MENU A PORTATE) =====================
     _aperitivoBenvenuto = (data['aperitivo_benvenuto'] as bool?) ?? false;
     _buffetDolci = (data['buffet_dolci'] as bool?) ?? false;
     _buffetDolciNote = data['buffet_dolci_note'];
-    // ===============================================================
+    
+    // ===================== 🟢 LETTURA NUOVI CAMPI (PACCHETTO FISSO) 🟢 =====================
+    _isPacchettoFisso = (data['is_pacchetto_fisso'] as bool?) ?? false;
+    _nomePacchettoFisso = data['nome_pacchetto_fisso'];
+    
+    // 1. TENTA LA LETTURA DAI NUOVI CAMPI SEPARATI (descrizione_1, 2, 3)
+    _descrizionePacchettoFisso = data['descrizione_1']; 
+    _descrizionePacchettoFisso2 = data['descrizione_2']; 
+    _descrizionePacchettoFisso3 = data['descrizione_3'];
+    
+    _prezzoPacchettoFisso = (data['prezzo_pacchetto_fisso'] as num?)?.toDouble() ?? 0.0;
+    _propostaGastronomicaPacchetto = data['proposta_gastronomica_pacchetto']; // 🌟 NUOVO CAMPO
+    
+    // 2. 🚨 FALLBACK DI COMPATIBILITÀ (Per i preventivi vecchi o mal salvati)
+    if (_isPacchettoFisso && 
+        (_descrizionePacchettoFisso == null || _descrizionePacchettoFisso!.isEmpty) && 
+        data['descrizione_pacchetto_fisso'] != null) {
+      
+      final fullDescr = (data['descrizione_pacchetto_fisso'] as String).trim();
+      final descLines = fullDescr.split('\n').map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
+
+      _descrizionePacchettoFisso = descLines.length > 0 ? descLines[0] : null; 
+      _descrizionePacchettoFisso2 = descLines.length > 1 ? descLines[1] : null; 
+      _descrizionePacchettoFisso3 = descLines.length > 2 ? descLines[2] : null;
+    } 
+    // =======================================================================================
 
     if (data['cliente'] != null && data['cliente'] is Map) {
       _cliente = Cliente.fromJson(data['cliente']);
@@ -117,7 +216,6 @@ class PreventivoBuilderProvider with ChangeNotifier {
             final Map<String, dynamic> json =
                 piattoData is Map ? piattoData as Map<String, dynamic> : {};
 
-            // Ricostruiamo un oggetto Piatto completo dai dati minimi salvati nel preventivo
             return Piatto(
               idUnico: json['id_unico'] ??
                   'custom_${DateTime.now().millisecondsSinceEpoch}',
@@ -147,8 +245,28 @@ class PreventivoBuilderProvider with ChangeNotifier {
       }
     }
 
+    // 🟢 NOTE INTEGRATIVE — LETTURA ROBUSTA
+    _noteIntegrative = ((data['note_integrative'] ?? data['noteIntegrative']) as String?)
+            ?.trim() ?? '';
+    print('[DEBUG][caricaDaFirestoreMap] SET _noteIntegrative=' + _noteIntegrative);
+
+    // 🔍 Log OUT sintesi
+    dlogBuilder('PROV:carica.out', {
+      'id': _preventivoId,
+      'descrizione_1': _descrizionePacchettoFisso,
+      'descrizione_2': _descrizionePacchettoFisso2,
+      'descrizione_3': _descrizionePacchettoFisso3,
+      'servizi.len': _serviziExtra.length,
+      'is_pacchetto_fisso': _isPacchettoFisso,
+      'prezzo_pacchetto_fisso': _prezzoPacchettoFisso,
+      'data_evento': _dataEvento?.toIso8601String(),
+      'note_integrative': _noteIntegrative,
+    });
+
     _hydrating = false;
+    print('[DEBUG][caricaDaFirestoreMap] OUT: _noteIntegrative=' + _noteIntegrative);
     notifyListeners();
+    print('--- TRACCIA: FINE caricaDaFirestoreMap ---');
   }
 
   // --- FUNZIONE PER DUPLICAZIONE (VERSIONE CORRETTA) ---
@@ -184,6 +302,9 @@ class PreventivoBuilderProvider with ChangeNotifier {
 
     // Azzeriamo i campi relativi alla conferma/firma
     _confermaPending = false;
+    _firmaUrl = null; // 🔑 AZZERAMENTO FIRME
+    _firmaUrlCliente2 = null; // 🔑 AZZERAMENTO FIRME
+    
     // Rimuoviamo eventuali acconti
     _acconto = null;
 
@@ -194,42 +315,77 @@ class PreventivoBuilderProvider with ChangeNotifier {
   }
 
   Map<String, dynamic> toFirestoreMap() {
+    // calcolo pacchetto welcome/dolci (solo per menu a portate)
+    final bool isPacchetto = _isPacchettoFisso == true;
+    final double pacchettoCosto = isPacchetto ? 0.0 : costoPacchettoWelcomeDolci;
+    final String pacchettoLabel = isPacchetto ? '' : labelPacchettoWelcomeDolci;
+
+    print('[DEBUG][toFirestoreMap] _noteIntegrative=' + _noteIntegrative);
     return {
+      // Cliente completo
       'cliente_id': _cliente?.idCliente,
       'cliente': _cliente?.toJson(),
       'nome_cliente': _cliente?.ragioneSociale,
 
       'nome_evento': _nomeEvento,
-      'data_evento':
-          _dataEvento != null ? Timestamp.fromDate(_dataEvento!) : null,
+      'data_evento': _dataEvento != null ? Timestamp.fromDate(_dataEvento!) : null,
       'numero_ospiti': _numeroOspiti,
       'tipo_pasto': _tipoPasto,
 
-      // --- MODIFICA: SCRITTURA CAMPI RINOMINATI ---
-      'menu': _menuPerBackend(),
-      'prezzo_menu_adulto': _prezzoMenuAdulto, // Ex prezzo_menu_persona
+      // Orari
+      'orario_inizio_h': _orarioInizio?.hour,
+      'orario_inizio_m': _orarioInizio?.minute,
+      'orario_fine_h': _orarioFine?.hour,
+      'orario_fine_m': _orarioFine?.minute,
+
+      // Menu a portate (se non pacchetto fisso)
+      'menu': isPacchetto ? null : _menuPerBackend(),
+      'prezzo_menu_adulto': _prezzoMenuAdulto,
       'nome_menu_template': _nomeMenuTemplate,
       'numero_bambini': _numeroBambini,
       'prezzo_menu_bambino': _prezzoMenuBambino,
-      'menu_bambini': _menuBambini, // Ex note_menu_bambini
+      'menu_bambini': _menuBambini,
 
+      // Servizi extra — scrivo sia "servizi" (legacy) che "servizi_extra" (nuovo)
       'servizi': _serviziExtra.values.map((s) => s.toJson()).toList(),
+      'servizi_extra': _serviziExtra.values.map((s) => s.toJson()).toList(),
 
       'sconto': _sconto,
       'note_sconto': _noteSconto,
+      'note_integrative': _noteIntegrative, // 🟢 SALVO SEMPRE
       'acconto': _acconto,
 
-      // 🔑 CORREZIONE 2: Assicuriamo che il valore salvato sia pulito
       'status': (_status ?? 'Bozza').trim(),
       'data_creazione': _dataCreazione ?? Timestamp.now(),
       'data_modifica': Timestamp.now(),
       'deleted_at': null,
 
-      // ===================== SCRITTURA NUOVI CAMPI =====================
+      // Firme
+      'firma_url': _firmaUrl,
+      'firma_url_cliente_2': _firmaUrlCliente2,
+
+      // Flag/sezioni menu a portate
       'aperitivo_benvenuto': _aperitivoBenvenuto,
       'buffet_dolci': _buffetDolci,
       'buffet_dolci_note': _buffetDolciNote,
-      // ================================================================
+
+      // Pacchetto fisso (nuove chiavi corte + compatibilità con le vecchie)
+      'is_pacchetto_fisso': _isPacchettoFisso,
+      'nome_pacchetto_fisso': _nomePacchettoFisso,
+      // ✅ chiavi “corte” usate dal PDF
+      'descrizione_1': _descrizionePacchettoFisso,
+      'descrizione_2': _descrizionePacchettoFisso2,
+      'descrizione_3': _descrizionePacchettoFisso3,
+      'proposta_gastronomica_pacchetto': _propostaGastronomicaPacchetto,
+      'prezzo_pacchetto_fisso': _prezzoPacchettoFisso,
+      // 🔁 compat: scrivo anche le “lunghe”
+      'descrizione_pacchetto_fisso': _descrizionePacchettoFisso,
+      'descrizione_pacchetto_fisso_2': _descrizionePacchettoFisso2,
+      'descrizione_pacchetto_fisso_3': _descrizionePacchettoFisso3,
+
+      // Pacchetto welcome+dolci calcolato (usato dal PDF lato DB)
+      'pacchetto_label': pacchettoLabel,
+      'pacchetto_costo': pacchettoCosto,
     };
   }
 
@@ -271,6 +427,11 @@ class PreventivoBuilderProvider with ChangeNotifier {
   String? get nomeEvento => _nomeEvento;
   DateTime? get dataEvento => _dataEvento;
   int? get numeroOspiti => _numeroOspiti;
+  
+  // 🟢 NUOVI GETTER ORARI
+  TimeOfDay? get orarioInizio => _orarioInizio;
+  TimeOfDay? get orarioFine => _orarioFine;
+  // ============================================
 
   // --- MODIFICA: GETTER RINOMINATI ---
   int get numeroBambini => _numeroBambini;
@@ -288,6 +449,23 @@ class PreventivoBuilderProvider with ChangeNotifier {
   String? get nomeMenuTemplate => _nomeMenuTemplate;
   // --- MODIFICA: GETTER RINOMINATO ---
   double get prezzoMenuAdulto => _prezzoMenuAdulto; // Ex prezzoMenuPersona
+  
+  // 🔑 GETTER FIRME AGGIUNTO
+  String? get firmaUrl => _firmaUrl;
+  String? get firmaUrlCliente2 => _firmaUrlCliente2; 
+  
+  // ===================== 🟢 NUOVI GETTER (PACCHETTO FISSO) 🟢 =====================
+  bool get isPacchettoFisso => _isPacchettoFisso;
+  String? get nomePacchettoFisso => _nomePacchettoFisso;
+  String? get descrizionePacchettoFisso => _descrizionePacchettoFisso;
+  String? get descrizionePacchettoFisso2 => _descrizionePacchettoFisso2; // 🚨 AGGIUNTO
+  String? get descrizionePacchettoFisso3 => _descrizionePacchettoFisso3; // 🚨 AGGIUNTO
+  double get prezzoPacchettoFisso => _prezzoPacchettoFisso;
+  String? get propostaGastronomicaPacchetto => _propostaGastronomicaPacchetto; // 🌟 NUOVO GETTER
+  
+  // 🟢 GETTER PER IL RIEPILOGO SERVIZI/CLIENTE (evita l'errore di duplicazione)
+  double get prezzoPacchettoSelezionato => _prezzoPacchettoFisso; 
+  // ==============================================================================
 
   bool get scontoAbilitato => _scontoAbilitato;
   double get sconto => _sconto;
@@ -296,10 +474,11 @@ class PreventivoBuilderProvider with ChangeNotifier {
   double? get acconto => _acconto;
   String? get tipoPasto => _tipoPasto;
 
-  // ===================== GETTER AGGIUNTI (NUOVI CAMPI) =====================
+  // ===================== GETTER AGGIUNTI (MENU A PORTATE) =====================
   bool get aperitivoBenvenuto => _aperitivoBenvenuto;
   bool get buffetDolci => _buffetDolci;
   String? get buffetDolciNote => _buffetDolciNote;
+  String get noteIntegrative => _noteIntegrative;
   // ========================================================================
 
   int get _numeroAdulti {
@@ -309,7 +488,7 @@ class PreventivoBuilderProvider with ChangeNotifier {
     return ospiti - bb;
   }
 
-  // --- MODIFICA: CALCOLO CON CAMPO RINOMINATO ---
+
   double get costoMenuAdulti => _prezzoMenuAdulto * _numeroAdulti;
   double get costoMenuBambini => _prezzoMenuBambino * _numeroBambini;
   double get costoMenu => costoMenuAdulti + costoMenuBambini;
@@ -317,7 +496,6 @@ class PreventivoBuilderProvider with ChangeNotifier {
   double get costoServizi =>
       _serviziExtra.values.fold<double>(0.0, (sum, s) => sum + (s.prezzo ?? 0.0));
 
-  // ===================== NUOVI GETTER DERIVATI =====================
   double get costoPacchettoWelcomeDolci {
     final n = _numeroOspiti ?? 0;
     if (_aperitivoBenvenuto && _buffetDolci) return n * 10.0; // pacchetto
@@ -326,7 +504,6 @@ class PreventivoBuilderProvider with ChangeNotifier {
     return 0.0;
   }
 
-  // 🔧 RESO NON-NULLABLE per evitare errori a valle
   String get labelPacchettoWelcomeDolci {
     if (_aperitivoBenvenuto && _buffetDolci) {
       return 'pacchetto aperitivo di benvenuto+buffet di dolci';
@@ -339,9 +516,24 @@ class PreventivoBuilderProvider with ChangeNotifier {
     }
     return '';
   }
-  // ================================================================
 
-  double get subtotale => costoMenu + costoServizi + costoPacchettoWelcomeDolci;
+
+  // 🔴 MODIFICA CHIAVE: Implementazione della logica condizionale nel subtotale
+  @override
+  double get subtotale {
+    final double costoBase;
+    
+    if (_isPacchettoFisso) {
+      // 🟢 CASO 1: Pacchetto a Prezzo Fisso (ignora i costi Menu/Welcome/Bambini)
+      costoBase = _prezzoPacchettoFisso;
+    } else {
+      // 🟢 CASO 2: Menu a Portate (MANTIENE LA LOGICA ESISTENTE)
+      costoBase = costoMenu + costoPacchettoWelcomeDolci;
+    }
+
+    // I servizi extra sono sempre aggiunti
+    return costoBase + costoServizi;
+  }
 
   double get totaleFinale => subtotale - _sconto;
 
@@ -404,8 +596,12 @@ class PreventivoBuilderProvider with ChangeNotifier {
   }
 
   String? _safeSnapshotJson() {
+    final sw = Stopwatch()..start();
     final wrap = creaPayloadSalvataggio();
-    if (wrap == null) return null;
+    sw.stop();
+    _logBuilder('hasLocalChanges snapshot ${sw.elapsedMilliseconds}ms');
+
+    if (wrap == null) return _baselineJson;
     final payload = wrap['payload'];
     final canon = _canonicalize(payload);
     return jsonEncode(canon);
@@ -431,15 +627,18 @@ class PreventivoBuilderProvider with ChangeNotifier {
     markDirty();
     notifyListeners();
   }
-
+  
+  // 🔑 Modifica: Aggiorna cliente
   void setCliente(Cliente nuovoCliente) {
-    if (_cliente != null &&
+    final bool isSame = (_cliente != null &&
         _cliente!.idCliente == nuovoCliente.idCliente &&
         _cliente!.ragioneSociale == nuovoCliente.ragioneSociale &&
         (_cliente!.telefono01 ?? '') == (nuovoCliente.telefono01 ?? '') &&
-        (_cliente!.mail ?? '') == (nuovoCliente.mail ?? '')) {
-      return;
-    }
+        (_cliente!.mail ?? '') == (nuovoCliente.mail ?? '') &&
+        (_cliente!.codiceFiscale ?? '') == (nuovoCliente.codiceFiscale ?? ''));
+        
+    if (isSame) return;
+    
     _cliente = nuovoCliente;
     markDirty();
     notifyListeners();
@@ -486,7 +685,6 @@ class PreventivoBuilderProvider with ChangeNotifier {
 
   // --- MODIFICA: SETTER RINOMINATO ---
   void setMenuBambini(String? v) {
-    // Ex setNoteMenuBambini
     final nv = (v ?? '').trim().isEmpty ? null : v!.trim();
     if (_menuBambini == nv) return;
     _menuBambini = nv;
@@ -497,8 +695,6 @@ class PreventivoBuilderProvider with ChangeNotifier {
   void setPreventivoId(String newId) {
     if (_preventivoId == newId) return;
     _preventivoId = newId;
-    // Non serve un notifyListeners() perché questo aggiorna solo lo stato interno
-    // per azioni successive come il salvataggio o la generazione del PDF.
   }
 
   void setPrezzoDaTemplate(MenuTemplate template) {
@@ -514,7 +710,6 @@ class PreventivoBuilderProvider with ChangeNotifier {
 
   // --- MODIFICA: SETTER RINOMINATO ---
   void setPrezzoMenuAdulto(double prezzo) {
-    // Ex setPrezzoManuale
     if (_prezzoMenuAdulto == prezzo && _nomeMenuTemplate == null) return;
     _prezzoMenuAdulto = prezzo;
     _nomeMenuTemplate = null;
@@ -526,6 +721,24 @@ class PreventivoBuilderProvider with ChangeNotifier {
     if (_prezzoMenuAdulto == 0.0 && _nomeMenuTemplate == null) return;
     _prezzoMenuAdulto = 0.0;
     _nomeMenuTemplate = null;
+    markDirty();
+    notifyListeners();
+  }
+  
+  // 🔑 SETTER URL FIRMA 1
+  void setFirmaUrl(String? url) {
+    final cleanedUrl = (url ?? '').trim().isEmpty ? null : url!.trim();
+    if (_firmaUrl == cleanedUrl) return;
+    _firmaUrl = cleanedUrl;
+    markDirty();
+    notifyListeners();
+  }
+
+  // 🔑 SETTER URL FIRMA 2
+  void setFirmaUrlCliente2(String? url) {
+    final cleanedUrl = (url ?? '').trim().isEmpty ? null : url!.trim();
+    if (_firmaUrlCliente2 == cleanedUrl) return;
+    _firmaUrlCliente2 = cleanedUrl;
     markDirty();
     notifyListeners();
   }
@@ -577,7 +790,6 @@ class PreventivoBuilderProvider with ChangeNotifier {
     if (sameForn && samePrezzo) return;
     s.fornitore = fornitore;
     s.prezzo = newPrezzo;
-    // debugPrint('[DEBUG BUILDER] Servizio ${ruolo} aggiornato. Telefono fornitore salvato: ${s.fornitore?.telefono01}'); // 🚨 DEBUG
     markDirty();
     notifyListeners();
   }
@@ -610,7 +822,6 @@ class PreventivoBuilderProvider with ChangeNotifier {
   }
 
   void setStato(String nuovoStato) {
-    // 🔑 CORREZIONE 3: Standardizziamo lo stato in minuscolo subito per consistenza
     final cleanedStato = nuovoStato.trim().toLowerCase();
     if (_status == cleanedStato) return;
     _status = cleanedStato;
@@ -624,6 +835,22 @@ class PreventivoBuilderProvider with ChangeNotifier {
     markDirty();
     notifyListeners();
   }
+  
+  // 🟢 SETTER ORARI
+  void setOrarioInizio(TimeOfDay? time) {
+    if (_orarioInizio == time) return;
+    _orarioInizio = time;
+    markDirty();
+    notifyListeners();
+  }
+
+  void setOrarioFine(TimeOfDay? time) {
+    if (_orarioFine == time) return;
+    _orarioFine = time;
+    markDirty();
+    notifyListeners();
+  }
+  // =================
 
   void aggiungiPiattiDaCatalogo({
     required String genere,
@@ -660,6 +887,7 @@ class PreventivoBuilderProvider with ChangeNotifier {
   }
 
   void caricaPreventivoEsistente(PreventivoCompleto p) {
+    print('[DEBUG][caricaPreventivoEsistente] IN: p.noteIntegrative=' + (p.noteIntegrative?.toString() ?? 'null'));
     final total = Stopwatch()..start();
     _hydrating = true;
 
@@ -678,7 +906,7 @@ class PreventivoBuilderProvider with ChangeNotifier {
     _confermaPending = false;
     _dataCreazione = p.dataCreazione;
     _prezzoMenuAdulto =
-        p.prezzoMenuPersona; // Mantenuto per compatibilità con questo vecchio metodo
+        p.prezzoMenuPersona; // compatibilità
     _nomeMenuTemplate = p.nomeMenuTemplate;
     _sconto = p.sconto;
     _noteSconto = p.noteSconto;
@@ -688,7 +916,11 @@ class PreventivoBuilderProvider with ChangeNotifier {
 
     _numeroBambini = p.numeroBambini ?? 0;
     _prezzoMenuBambino = p.prezzoMenuBambino ?? 0.0;
-    _menuBambini = p.noteMenuBambini; // Mantenuto per compatibilità
+    _menuBambini = p.noteMenuBambini;
+
+    // 🟢 CARICO NOTE INTEGRATIVE DAL MODEL
+    _noteIntegrative = p.noteIntegrative ?? '';
+    print('[DEBUG][caricaPreventivoEsistente] SET _noteIntegrative=' + _noteIntegrative);
 
     _dirty = false;
     _hydrating = false;
@@ -699,6 +931,7 @@ class PreventivoBuilderProvider with ChangeNotifier {
     _logBuilder(
         'caricaPreventivoEsistente snapshot ${snapSw.elapsedMilliseconds}ms');
 
+    print('[DEBUG][caricaPreventivoEsistente] OUT: _noteIntegrative=' + _noteIntegrative);
     notifyListeners();
     total.stop();
     _logBuilder(
@@ -734,12 +967,20 @@ class PreventivoBuilderProvider with ChangeNotifier {
 
   Map<String, dynamic>? creaPayloadSalvataggio() {
     final t = Stopwatch()..start();
-    if (_cliente == null ||
+
+    // 🟢 NUOVA LOGICA DI VALIDAZIONE
+    bool isMissingEssentialData = 
+        _cliente == null ||
         _dataEvento == null ||
-        _nomeEvento == null ||
-        _numeroOspiti == null) {
+        _nomeEvento == null;
+    
+    if (!_isPacchettoFisso && _numeroOspiti == null) {
+      isMissingEssentialData = true;
+    }
+    
+    if (isMissingEssentialData) {
       _erroreSalvataggio =
-          "Dati essenziali mancanti (cliente, data, nome evento, ospiti).";
+          "Dati essenziali mancanti (cliente, data, nome evento, ospiti/tipo pasto).";
       notifyListeners();
       t.stop();
       _logBuilder(
@@ -749,32 +990,61 @@ class PreventivoBuilderProvider with ChangeNotifier {
 
     final payload = <String, dynamic>{
       'cliente': _cliente!.toJson(),
-      'menu': _menuPerBackend(),
+      'menu': _isPacchettoFisso ? null : _menuPerBackend(),
       'data_evento': _dataEvento!.toIso8601String().substring(0, 10),
       'nome_evento': _nomeEvento!,
-      'numero_ospiti': _numeroOspiti!,
-      'numero_bambini': _numeroBambini,
+      'numero_ospiti': _numeroOspiti ?? 0,
+      'numero_bambini': _numeroBambini ?? 0,
+      'orario_inizio_h': _orarioInizio?.hour,
+      'orario_inizio_m': _orarioInizio?.minute,
+      'orario_fine_h': _orarioFine?.hour,
+      'orario_fine_m': _orarioFine?.minute,
       'prezzo_menu_bambino': _prezzoMenuBambino,
-      'note_menu_bambini':
-          _menuBambini, // Vecchio nome per compatibilità payload
-      'servizi_extra': _serviziExtra.values.map((s) => s.toJson()).toList(),
-      'prezzo_menu_persona':
-          _prezzoMenuAdulto, // Vecchio nome per compatibilità payload
+      'note_menu_bambini': _menuBambini, 
+      'prezzo_menu_persona': _prezzoMenuAdulto, 
       'nome_menu_template': _nomeMenuTemplate,
-      'sconto': _sconto,
-      'note_sconto': _noteSconto,
-      'acconto': _acconto,
-      'tipo_pasto': _tipoPasto,
-
-      // 🔑 CORREZIONE CHIAVE: INCLUDI LO STATO NEL PAYLOAD, PULITO
-      'status': (_status ?? 'Bozza').trim(),
-
-      // ============ inclusione informativa (payload di lavoro) ============
       'aperitivo_benvenuto': _aperitivoBenvenuto,
       'buffet_dolci': _buffetDolci,
       'buffet_dolci_note': _buffetDolciNote,
-      // ====================================================================
+      'servizi_extra': _serviziExtra.values.map((s) => s.toJson()).toList(),
+      'sconto': _sconto,
+      'note_sconto': _noteSconto,
+      'note_integrative': _noteIntegrative, // 🟢 SCRIVO NEL PAYLOAD
+      'acconto': _acconto,
+      'tipo_pasto': _tipoPasto,
+      'status': (_status ?? 'Bozza').trim(),
+      'firma_url': _firmaUrl,
+      'firma_url_cliente_2': _firmaUrlCliente2, 
+      
+      // ===================== 🟢 SCRITTURA NUOVI CAMPI (PACCHETTO FISSO) 🟢 =====================
+      'is_pacchetto_fisso': _isPacchettoFisso,
+      'nome_pacchetto_fisso': _nomePacchettoFisso,
+      
+      // 🚨 CHIAVI CORTE DB (quelle usate dal PDF)
+      'descrizione_1': _descrizionePacchettoFisso, 
+      'descrizione_2': _descrizionePacchettoFisso2, 
+      'descrizione_3': _descrizionePacchettoFisso3, 
+      
+      'proposta_gastronomica_pacchetto': _propostaGastronomicaPacchetto, 
+      'prezzo_pacchetto_fisso': _prezzoPacchettoFisso,
+      
+      // Chiavi legacy (si mantengono valorizzate uguali, nessuna logica cambiata)
+      'descrizione_pacchetto_fisso': _descrizionePacchettoFisso,
+      'descrizione_pacchetto_fisso_2': _descrizionePacchettoFisso2,
+      'descrizione_pacchetto_fisso_3': _descrizionePacchettoFisso3,
     };
+
+    print('[DEBUG][creaPayloadSalvataggio] payload.note_integrative=' + (payload['note_integrative']?.toString() ?? 'null'));
+
+    // 🔍 Log payload (prima del return)
+    dlogBuilder('PROV:save.snapshot', {
+      'hash': jhashBuilder(payload),
+      'descr1': payload['descrizione_1'],
+      'descr2': payload['descrizione_2'],
+      'descr3': payload['descrizione_3'],
+      'extra.len': (payload['servizi_extra'] as List).length,
+      'is_pacchetto_fisso': payload['is_pacchetto_fisso'],
+    });
 
     t.stop();
     _logBuilder('creaPayloadSalvataggio OK ${t.elapsedMilliseconds}ms');
@@ -782,13 +1052,6 @@ class PreventivoBuilderProvider with ChangeNotifier {
       "preventivo_id": _preventivoId,
       "payload": payload,
     };
-  }
-
-  Future<void> _applicaConfermaSeRichiesta(String idSalvato) async {
-    // Rimuoviamo la vecchia logica del servizio Python.
-    // L'aggiornamento dello stato in Firestore è gestito direttamente dalla UI (dati_cliente_screen.dart)
-    // dopo l'acquisizione della firma, rendendo questa funzione obsoleta.
-    _logBuilder('_applicaConfermaSeRichiesta SKIPPED: logica gestita dalla UI.');
   }
 
   Future<PreventivoSummary?> salvaPreventivo({
@@ -833,17 +1096,29 @@ class PreventivoBuilderProvider with ChangeNotifier {
 
       final payload = payloadCompleto['payload'] as Map<String, dynamic>;
 
+      // 🔍 Log PRE-salvataggio DB
+      dlogBuilder('SAVE:payload', {
+        'id': _preventivoId,
+        'hash': jhashBuilder(payload),
+        'fields': payload.keys.toList(),
+        'descr1': payload['descrizione_1'],
+        'descr2': payload['descrizione_2'],
+        'descr3': payload['descrizione_3'],
+        'extra.len': (payload['servizi_extra'] as List).length,
+        'note_integrative': payload['note_integrative'],
+      });
+
       String idPreventivoSalvato;
 
       // LOGICA DI SALVATAGGIO SU FIRESTORE
       if (_preventivoId == null) {
-        // CREAZIONE (usiamo add)
+        // CREAZIONE
         final newDoc =
             await FirebaseFirestore.instance.collection('preventivi').add(payload);
         idPreventivoSalvato = newDoc.id;
         _preventivoId = idPreventivoSalvato;
       } else {
-        // AGGIORNAMENTO (usiamo set/update)
+        // AGGIORNAMENTO
         await FirebaseFirestore.instance
             .collection('preventivi')
             .doc(_preventivoId!)
@@ -851,13 +1126,10 @@ class PreventivoBuilderProvider with ChangeNotifier {
         idPreventivoSalvato = _preventivoId!;
       }
 
-      // Aggiungiamo un log per tracciare la fine dell'operazione DB
       _logBuilder('Firestore Save/Update completato per ID: $idPreventivoSalvato');
-
-      // _applicaConfermaSeRichiesta è gestita direttamente dalla UI dopo la firma.
+      print('[DEBUG][salvaPreventivo] _noteIntegrative=' + _noteIntegrative);
 
       final tSumm = Stopwatch()..start();
-      // 🔑 Il summary deve leggere lo stato aggiornato dal provider, non da un fallback generico
       final summaryAggiornato = PreventivoSummary.fromJson({
         ...payload,
         'preventivo_id': idPreventivoSalvato,
@@ -870,9 +1142,9 @@ class PreventivoBuilderProvider with ChangeNotifier {
 
       try {
         final tCache = Stopwatch()..start();
-        preventiviProvider.aggiungiOAggiornaPreventivoInCache(summaryAggiornato);
+        // preventiviProvider.aggiungiOAggiornaPreventivoInCache(summaryAggiornato);
         tCache.stop();
-        _logBuilder('aggiungiOAggiornaPreventivoInCache ${tCache.elapsedMilliseconds}ms');
+        _logBuilder('aggiungiOAggiornaPreventivoInCache SKIPPED: Cache update logic not verified.');
       } catch (e) {
         _logBuilder('cache update error: $e');
       }
@@ -923,12 +1195,33 @@ class PreventivoBuilderProvider with ChangeNotifier {
     _nomeMenuTemplate = null;
     _acconto = null;
     _tipoPasto = null;
+    
+    // 🔑 RESET FIRME
+    _firmaUrl = null;
+    _firmaUrlCliente2 = null;
 
-    // ===================== RESET NUOVI CAMPI =====================
+    // 🟢 RESET ORARI
+    _orarioInizio = null;
+    _orarioFine = null;
+    // =================
+
+    // ===================== RESET CAMPI ESISTENTI (MENU A PORTATE) =====================
     _aperitivoBenvenuto = false;
     _buffetDolci = false;
     _buffetDolciNote = null;
-    // ============================================================
+    
+    // ===================== 🟢 RESET NUOVI CAMPI (PACCHETTO FISSO) 🟢 =====================
+    _isPacchettoFisso = false;
+    _nomePacchettoFisso = null;
+    _descrizionePacchettoFisso = null;
+    _descrizionePacchettoFisso2 = null; 
+    _descrizionePacchettoFisso3 = null; 
+    _prezzoPacchettoFisso = 0.0;
+    _propostaGastronomicaPacchetto = null; 
+    // =======================================================================================
+
+    // 🟢 RESET NOTE INTEGRATIVE
+    _noteIntegrative = '';
 
     _dirty = false;
     _baselineJson = null;
@@ -943,7 +1236,7 @@ class PreventivoBuilderProvider with ChangeNotifier {
     _logBuilder('reset TOTAL ${total.elapsedMilliseconds}ms');
   }
 
-  // ===================== NUOVI SETTER PUBBLICI =====================
+  // ===================== NUOVI SETTER PUBBLICI (MENU A PORTATE) =====================
   void setAperitivoBenvenuto(bool v) {
     if (_aperitivoBenvenuto == v) return;
     _aperitivoBenvenuto = v;
@@ -965,5 +1258,128 @@ class PreventivoBuilderProvider with ChangeNotifier {
     markDirty();
     notifyListeners();
   }
-  // ================================================================
+  
+  // ===================== 🟢 NUOVI SETTER (PACCHETTO FISSO) 🟢 =====================
+  
+  void setDescrizionePacchettoFisso(String? v) {
+    final nv = (v ?? '').trim().isEmpty ? null : v!.trim();
+    if (_descrizionePacchettoFisso == nv) return;
+    _descrizionePacchettoFisso = nv;
+    markDirty();
+    notifyListeners();
+  }
+  
+  void setDescrizionePacchettoFisso2(String? v) {
+    final nv = (v ?? '').trim().isEmpty ? null : v!.trim();
+    if (_descrizionePacchettoFisso2 == nv) return;
+    _descrizionePacchettoFisso2 = nv;
+    markDirty();
+    notifyListeners();
+  }
+  
+  void setDescrizionePacchettoFisso3(String? v) {
+    final nv = (v ?? '').trim().isEmpty ? null : v!.trim();
+    if (_descrizionePacchettoFisso3 == nv) return;
+    _descrizionePacchettoFisso3 = nv;
+    markDirty();
+    notifyListeners();
+  }
+  
+  void setPropostaGastronomicaPacchetto(String? v) {
+    final nv = (v ?? '').trim().isEmpty ? null : v!.trim();
+    if (_propostaGastronomicaPacchetto == nv) return;
+    _propostaGastronomicaPacchetto = nv;
+    markDirty();
+    notifyListeners();
+  }
+  
+  void setPacchettoFissoMode(bool v) {
+    if (_isPacchettoFisso == v) return;
+    _isPacchettoFisso = v;
+    
+    if (v) {
+      _menu = {};
+      _prezzoMenuAdulto = 0.0;
+      _nomeMenuTemplate = null;
+      _aperitivoBenvenuto = false;
+      _buffetDolci = false;
+      _buffetDolciNote = null;
+      _menuBambini = null;
+      _prezzoMenuBambino = 0.0;
+      _numeroBambini = 0;
+    } else {
+      _nomePacchettoFisso = null;
+      _descrizionePacchettoFisso = null;
+      _descrizionePacchettoFisso2 = null; 
+      _descrizionePacchettoFisso3 = null; 
+      _prezzoPacchettoFisso = 0.0;
+      _propostaGastronomicaPacchetto = null;
+    }
+    
+    markDirty();
+    notifyListeners();
+  }
+  
+  void setPacchettoFisso(PacchettoEvento? pacchetto) {  
+    if (pacchetto == null) {
+      _isPacchettoFisso = false;
+      _nomePacchettoFisso = null;
+      _descrizionePacchettoFisso = null;
+      _descrizionePacchettoFisso2 = null; 
+      _descrizionePacchettoFisso3 = null; 
+      _prezzoPacchettoFisso = 0.0;
+      _propostaGastronomicaPacchetto = null;
+    } else {
+      _isPacchettoFisso = true;
+      _nomePacchettoFisso = pacchetto.nome;
+      _prezzoPacchettoFisso = pacchetto.prezzoFisso;
+      _propostaGastronomicaPacchetto = pacchetto.propostaGastronomica;
+      
+      final fullDesc = pacchetto.descrizione ?? '';
+      final descLines = fullDesc.split('\n')
+                                .map((s) => s.trim())
+                                .where((s) => s.isNotEmpty)
+                                .toList();
+
+      _descrizionePacchettoFisso = descLines.length > 0 ? descLines[0] : null; 
+      _descrizionePacchettoFisso2 = descLines.length > 1 ? descLines[1] : null; 
+      _descrizionePacchettoFisso3 = descLines.length > 2 ? descLines[2] : null; 
+      
+      if (_isPacchettoFisso) {
+          _menu = {};
+          _prezzoMenuAdulto = 0.0;
+          _nomeMenuTemplate = null;
+          _aperitivoBenvenuto = false;
+          _buffetDolci = false;
+          _buffetDolciNote = null;
+          _menuBambini = null;
+          _prezzoMenuBambino = 0.0;
+          _numeroBambini = 0;
+      }
+    }
+    
+    markDirty();
+    notifyListeners();
+  } 
+
+  void resetPacchettoFisso() {
+    _isPacchettoFisso = false;
+    _nomePacchettoFisso = null;
+    _descrizionePacchettoFisso = null;
+    _descrizionePacchettoFisso2 = null; 
+    _descrizionePacchettoFisso3 = null; 
+    _prezzoPacchettoFisso = 0.0;
+    _propostaGastronomicaPacchetto = null; 
+    markDirty();
+    notifyListeners();
+  }
+  // =======================================================================================
+
+  void setNoteIntegrative(String? v) {
+    final nv = (v == null || v.trim().isEmpty) ? '' : v.trim();
+    if (_noteIntegrative == nv) return;
+    _noteIntegrative = nv;
+    _dirty = true;
+    notifyListeners();
+  }
 }

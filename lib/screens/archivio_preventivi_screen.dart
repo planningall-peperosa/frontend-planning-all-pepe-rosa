@@ -62,25 +62,32 @@ class _ArchivioPreventiviScreenState extends State<ArchivioPreventiviScreen> {
   // Questo metodo non chiama più un Provider, ma costruisce una query per Firestore
   // e aggiorna lo stream a cui la UI è in ascolto.
   void _eseguiRicerca() {
-    // La query di base parte dalla collezione 'preventivi'
+    // Base: collezione
     Query query = FirebaseFirestore.instance.collection('preventivi');
 
-    // Applica i filtri per data direttamente sulla query al database
-    if (_dataDa != null) {
-      query = query.where('data_evento', isGreaterThanOrEqualTo: Timestamp.fromDate(_dataDa!));
+    // Se NON ci sono filtri data attivi, di default mostra solo da OGGI in poi
+    DateTime? qDa = _dataDa;
+    DateTime? qA  = _dataA;
+    if (qDa == null && qA == null && _filtroRapidoSelezionato == null) {
+      final now = DateTime.now();
+      qDa = DateTime(now.year, now.month, now.day); // oggi 00:00
     }
-    if (_dataA != null) {
-      // Per includere l'intero giorno finale, impostiamo l'ora alla fine della giornata
-      final endOfDay = DateTime(_dataA!.year, _dataA!.month, _dataA!.day, 23, 59, 59);
-      query = query.where('data_evento', isLessThanOrEqualTo: Timestamp.fromDate(endOfDay));
+
+    // Applica i filtri data (inclusivi) se presenti
+    if (qDa != null) {
+      query = query.where('data_evento',
+          isGreaterThanOrEqualTo: Timestamp.fromDate(qDa));
     }
-    
-    // Ordiniamo sempre i risultati per coerenza.
-    // NOTA: Firestore richiede un indice per query complesse (es. filtro su un campo e ordine su un altro).
-    // Se ricevi un errore in console con un link, cliccalo per creare l'indice automaticamente.
+    if (qA != null) {
+      final endOfDay =
+          DateTime(qA.year, qA.month, qA.day, 23, 59, 59, 999); // fine giorno
+      query = query.where('data_evento',
+          isLessThanOrEqualTo: Timestamp.fromDate(endOfDay));
+    }
+
+    // Ordinamento coerente
     query = query.orderBy('data_evento').orderBy('data_creazione', descending: true);
-    
-    // Aggiorniamo lo stato con il nuovo stream, la UI si aggiornerà di conseguenza
+
     setState(() {
       _preventiviStream = query.snapshots();
     });
@@ -377,94 +384,172 @@ class _ArchivioPreventiviScreenState extends State<ArchivioPreventiviScreen> {
 
   Widget _buildPreventivoCard(ThemeData theme, Preventivo preventivo, bool isBozza) {
     final bool isConfermato = preventivo.status.toLowerCase() == 'confermato';
+    final String preventivoId = preventivo.id;
 
-    return Card(
-      margin: const EdgeInsets.symmetric(vertical: 4),
-      color: isBozza ? theme.colorScheme.surface : theme.cardColor,
-      child: ListTile(
-        title: Text(preventivo.nomeCliente),
-        subtitle: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const SizedBox(height: 4),
-            Text('${preventivo.nomeEvento} • ${DateFormat('dd/MM/yyyy').format(preventivo.dataEvento)}'),
-            const SizedBox(height: 2),
-            Text('ID: ${preventivo.id}', style: theme.textTheme.bodySmall),
-          ],
-        ),
-        trailing: Transform.translate(
-          offset: const Offset(6, 0), // leggero spostamento a destra
-          child: Row(
+    // 🔑 CORREZIONE: Avvolgiamo la Card in un Dismissible
+    return Dismissible(
+      key: ValueKey(preventivoId), // Chiave unica per l'elemento
+      direction: DismissDirection.endToStart,
+      background: Container(
+        alignment: Alignment.centerRight,
+        padding: const EdgeInsets.only(right: 20.0),
+        color: Colors.red,
+        child: const Icon(Icons.delete_forever, color: Colors.white),
+      ),
+      confirmDismiss: (direction) async {
+        if (direction == DismissDirection.endToStart) {
+          // **🔑 NUOVA LOGICA: Sposto la conferma qui**
+
+          final bool? conferma = await showDialog<bool>(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              title: const Text('Eliminare il preventivo?'),
+              content: const Text(
+                'Questa azione è definitiva e non può essere annullata.',
+              ),
+              actions: [
+                TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Annulla')),
+                ElevatedButton(
+                  onPressed: () => Navigator.of(ctx).pop(true),
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+                  child: const Text('Elimina'),
+                ),
+              ],
+            ),
+          );
+
+          if (conferma != true) {
+            return false; // **L'utente ha ANNULLATO: NON rimuovere la Card.**
+          }
+
+          // **Se l'utente ha CONFERMATO, procedi con l'eliminazione del database**
+          final bool eliminazioneRiuscita = await _eliminaPreventivo(preventivoId);
+          
+          return eliminazioneRiuscita; // Restituisce true solo se l'eliminazione DB è OK.
+        }
+        return false;
+      },
+      onDismissed: (_) {
+        // Questa callback ora serve solo come "pass-through" dopo che confirmDismiss ha restituito true.
+        // L'azione di DB e la notifica all'utente sono già state gestite in confirmDismiss.
+      },
+      child: Card(
+        margin: const EdgeInsets.symmetric(vertical: 4),
+        color: isBozza ? theme.colorScheme.surface : theme.cardColor,
+        child: ListTile(
+          title: Text(preventivo.nomeCliente),
+          subtitle: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
-              Chip(
-                label: Text(
-                  preventivo.status,
-                  style: const TextStyle(fontSize: 10, color: Colors.white),
-                ),
-                backgroundColor: isConfermato
-                    ? Colors.green
-                    : Colors.redAccent, // ✅ verde per confermato, rosso per bozza
-                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 0),
-                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              ),
-              const SizedBox(width: 4),
-              IconButton(
-                tooltip: 'Duplica Preventivo',
-                icon: const Icon(Icons.copy_all, size: 20),
-                onPressed: () async {
-                  final conferma = await showDialog<bool>(
-                    context: context,
-                    builder: (ctx) => AlertDialog(
-                      title: const Text('Duplicare il preventivo?'),
-                      content: Text(
-                        'Verrà creata una nuova bozza basata su "${preventivo.nomeCliente} - ${preventivo.nomeEvento}".',
-                      ),
-                      actions: [
-                        TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Annulla')),
-                        ElevatedButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('Duplica')),
-                      ],
-                    ),
-                  );
-
-                  if (conferma != true || !mounted) return;
-
-                  showDialog(
-                    context: context,
-                    barrierDismissible: false,
-                    builder: (ctx) => const Center(child: CircularProgressIndicator()),
-                  );
-
-                  try {
-                    await Provider.of<PreventivoBuilderProvider>(context, listen: false)
-                        .preparaPerDuplicazione(preventivo.id);
-
-                    Navigator.of(context, rootNavigator: true).pop();
-
-                    if (mounted) {
-                      Navigator.of(context).push(
-                        MaterialPageRoute(builder: (_) => const CreaPreventivoScreen()),
-                      );
-                    }
-                  } catch (e) {
-                    Navigator.of(context, rootNavigator: true).pop();
-                    if (mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text('Errore durante la duplicazione: ${e.toString()}'),
-                          backgroundColor: Colors.red,
-                        ),
-                      );
-                    }
-                  }
-                },
-              ),
+              const SizedBox(height: 4),
+              Text('${preventivo.nomeEvento} • ${DateFormat('dd/MM/yyyy').format(preventivo.dataEvento)}'),
+              const SizedBox(height: 2),
+              Text('ID: ${preventivo.id}', style: theme.textTheme.bodySmall),
             ],
           ),
+          trailing: Transform.translate(
+            offset: const Offset(6, 0), // leggero spostamento a destra
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Chip(
+                  label: Text(
+                    preventivo.status,
+                    style: const TextStyle(fontSize: 10, color: Colors.white),
+                  ),
+                  backgroundColor: isConfermato
+                      ? Colors.green
+                      : Colors.redAccent, // ✅ verde per confermato, rosso per bozza
+                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 0),
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+                const SizedBox(width: 4),
+                IconButton(
+                  tooltip: 'Duplica Preventivo',
+                  icon: const Icon(Icons.copy_all, size: 20),
+                  onPressed: () async {
+                    // Logica di duplicazione omessa per brevità, assumendo sia corretta
+                    final conferma = await showDialog<bool>(
+                      context: context,
+                      builder: (ctx) => AlertDialog(
+                        title: const Text('Duplicare il preventivo?'),
+                        content: Text(
+                          'Verrà creata una nuova bozza basata su "${preventivo.nomeCliente} - ${preventivo.nomeEvento}".',
+                        ),
+                        actions: [
+                          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Annulla')),
+                          ElevatedButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('Duplica')),
+                        ],
+                      ),
+                    );
+
+                    if (conferma != true || !mounted) return;
+
+                    showDialog(
+                      context: context,
+                      barrierDismissible: false,
+                      builder: (ctx) => const Center(child: CircularProgressIndicator()),
+                    );
+
+                    try {
+                      await Provider.of<PreventivoBuilderProvider>(context, listen: false)
+                          .preparaPerDuplicazione(preventivo.id);
+
+                      Navigator.of(context, rootNavigator: true).pop();
+
+                      if (mounted) {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(builder: (_) => const CreaPreventivoScreen()),
+                        );
+                      }
+                    } catch (e) {
+                      Navigator.of(context, rootNavigator: true).pop();
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text('Errore durante la duplicazione: ${e.toString()}'),
+                            backgroundColor: Colors.red,
+                          ),
+                        );
+                      }
+                    }
+                  },
+                ),
+              ],
+            ),
+          ),
+          onTap: () => _apriDettaglioPreventivo(preventivo),
         ),
-        onTap: () => _apriDettaglioPreventivo(preventivo),
       ),
     );
+  }
+
+
+  // 🔑 NUOVA SIGNATURE: Ora restituisce un Future<bool> (true = eliminato con successo, false = errore)
+  Future<bool> _eliminaPreventivo(String preventivoId) async {
+    // La logica del dialogo è stata spostata in _buildPreventivoCard.
+    // Questa funzione si occupa SOLO dell'eliminazione e della gestione degli errori/feedback.
+    
+    try {
+      // 🔑 Eliminazione del documento da Firestore
+      await FirebaseFirestore.instance.collection('preventivi').doc(preventivoId).delete();
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Preventivo eliminato con successo.'), backgroundColor: Colors.green),
+        );
+      }
+      
+      // Con l'uso di StreamBuilder, la UI si aggiornerà automaticamente dopo l'eliminazione
+      return true; // **Successo**
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Errore durante l\'eliminazione: ${e.toString()}'), backgroundColor: Colors.red),
+        );
+      }
+      return false; // **Errore: NON rimuovere la Card.**
+    }
   }
 }

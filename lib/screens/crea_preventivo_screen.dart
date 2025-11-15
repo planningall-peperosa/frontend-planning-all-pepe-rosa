@@ -1,8 +1,9 @@
 // lib/screens/crea_preventivo_screen.dart
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:intl/intl.dart'; // Aggiunto per formattare il log della data
+import 'package:intl/intl.dart'; 
 
 import '../providers/piatti_provider.dart';
 import '../providers/menu_templates_provider.dart';
@@ -10,6 +11,7 @@ import '../providers/menu_templates_provider.dart';
 import '../providers/preventivo_builder_provider.dart';
 import '../models/piatto.dart';
 import '../models/menu_template.dart';
+import '../models/pacchetto_evento.dart'; // 🟢 NUOVO IMPORT
 import 'servizi_extra_screen.dart';
 import '../widgets/wizard_stepper.dart';
 import '../widgets/tipo_pasto_field.dart';
@@ -29,6 +31,7 @@ class CreaPreventivoScreen extends StatefulWidget {
 
 class _CreaPreventivoScreenState extends State<CreaPreventivoScreen> {
   MenuTemplate? _selectedTemplate;
+  PacchettoEvento? _selectedPacchetto; // 🟢 NUOVO STATO
   Map<String, List<Piatto>> _menuInCostruzione = {};
   late TextEditingController _prezzoManualeController;
 
@@ -38,6 +41,8 @@ class _CreaPreventivoScreenState extends State<CreaPreventivoScreen> {
   // 🔹 Stato locale per rendere i toggle reattivi anche se il Provider non notifica
   bool _aperitivoBenvenutoLocal = false;
   bool _buffetDolciLocal = false;
+  
+  List<PacchettoEvento> _pacchettiEventi = []; // 🟢 NUOVO STATO
 
   bool _isLoading = true;
   bool _isSaving = false;
@@ -61,10 +66,11 @@ class _CreaPreventivoScreenState extends State<CreaPreventivoScreen> {
       _aperitivoBenvenutoLocal = preventivoBuilder.aperitivoBenvenuto;
       _buffetDolciLocal = preventivoBuilder.buffetDolci;
 
-      // Carica i dati di catalogo
+      // Carica i dati di catalogo E I PACCHETTI
       await Future.wait([
         piattiProvider.fetch(),
         templatesProvider.fetch(),
+        _caricaPacchettiEventi(), // 🟢 CARICA NUOVI PACCHETTI
       ]);
 
       final templates = templatesProvider.templates;
@@ -75,9 +81,28 @@ class _CreaPreventivoScreenState extends State<CreaPreventivoScreen> {
       } else {
         // Modalità Creazione
         _sincronizzaStatoUI(templates);
+        // 🟢 IMPOSTA IL DEFAULT: Menu a Portate
+        preventivoBuilder.setPacchettoFissoMode(false);
         setState(() => _isLoading = false);
       }
     });
+  }
+
+  // 🟢 NUOVA FUNZIONE: Carica i pacchetti evento dalla collezione
+  Future<void> _caricaPacchettiEventi() async {
+    try {
+      final snapshot = await FirebaseFirestore.instance
+          .collection('pacchetti_eventi')
+          .get();
+      _pacchettiEventi = snapshot.docs
+          .map((doc) => PacchettoEvento.fromFirestore(doc))
+          .toList();
+    } catch (e) {
+      if (mounted) {
+        // ignore: avoid_print
+        print("Errore caricamento pacchetti evento: $e");
+      }
+    }
   }
 
   Future<List<MenuTemplate>> _caricaMenuTemplates() async {
@@ -101,26 +126,63 @@ class _CreaPreventivoScreenState extends State<CreaPreventivoScreen> {
     final preventivoBuilder =
         Provider.of<PreventivoBuilderProvider>(context, listen: false);
 
+    // 🚨 DEBUG START 🚨
+    print('flutter: [SYNC START] Sincronizzazione UI avviata.');
+    print('flutter: [DEBUG SYNC] isPacchettoFisso (Provider): ${preventivoBuilder.isPacchettoFisso}');
+    print('flutter: [DEBUG SYNC] nomePacchettoFisso (Provider): ${preventivoBuilder.nomePacchettoFisso}');
+    print('flutter: [DEBUG SYNC] Totale Pacchetti DB Caricati: ${_pacchettiEventi.length}');
+
+    // 🟢 Sincronizzazione PACCHETTO FISSO
+    final nomePacchetto = preventivoBuilder.nomePacchettoFisso;
+    
+    if (preventivoBuilder.isPacchettoFisso && nomePacchetto != null) {
+      
+      // 🔑 FIX/DEBUG: Cerca e imposta il pacchetto locale solo SE il builder lo ha
+      try {
+          _selectedPacchetto = _pacchettiEventi
+              .cast<PacchettoEvento?>()
+              .firstWhere((p) => p?.nome == nomePacchetto, orElse: () => null);
+          
+          if (_selectedPacchetto != null) {
+               print('flutter: [DEBUG SYNC] Pacchetto ${nomePacchetto} trovato e impostato localmente.');
+          } else {
+               print('flutter: [DEBUG SYNC WARNING] Pacchetto "${nomePacchetto}" NON trovato nella lista locale.');
+          }
+
+      } catch (e) {
+          print('flutter: [DEBUG SYNC ERROR] Errore ricerca pacchetto per nome: $e');
+          _selectedPacchetto = null;
+      }
+      
+      // 🔑 FIX: Se è pacchetto fisso, il template DEVE essere null
+      _selectedTemplate = null; 
+
+    } else {
+      // 🔑 FIX: Se non siamo in modalità pacchetto fisso, puliamo il campo locale del pacchetto.
+      _selectedPacchetto = null;
+
+      // Template selezionato (solo se non è Pacchetto Fisso)
+      _selectedTemplate = templates
+          .cast<MenuTemplate?>()
+          .firstWhere((t) => t?.nomeMenu == preventivoBuilder.nomeMenuTemplate,
+              orElse: () => null);
+    }
+
+
     // Log data da Provider
     print(
         "flutter: [DEBUG CARICA] Data evento dal Provider: ${preventivoBuilder.dataEvento != null ? DateFormat('dd/MM/yyyy').format(preventivoBuilder.dataEvento!) : 'NULL'}");
 
     setState(() {
-      // Prezzo manuale
-      _prezzoManualeController.text = preventivoBuilder.prezzoMenuAdulto > 0
+      // Prezzo manuale (solo se non è Pacchetto Fisso)
+      _prezzoManualeController.text = preventivoBuilder.prezzoMenuAdulto > 0 && !preventivoBuilder.isPacchettoFisso
           ? preventivoBuilder.prezzoMenuAdulto
               .toStringAsFixed(2)
               .replaceAll('.', ',')
           : '';
 
-      // Template selezionato
-      _selectedTemplate = templates
-          .cast<MenuTemplate?>()
-          .firstWhere((t) => t?.nomeMenu == preventivoBuilder.nomeMenuTemplate,
-              orElse: () => null);
-
-      // Menu
-      _menuInCostruzione = Map.from(preventivoBuilder.menu);
+      // Menu (solo se non è Pacchetto Fisso)
+      _menuInCostruzione = preventivoBuilder.isPacchettoFisso ? {} : Map.from(preventivoBuilder.menu);
 
       // Buffet dolci note + toggle (sincronizza locale)
       _buffetDolciNoteController.text =
@@ -128,6 +190,9 @@ class _CreaPreventivoScreenState extends State<CreaPreventivoScreen> {
       _aperitivoBenvenutoLocal = preventivoBuilder.aperitivoBenvenuto;
       _buffetDolciLocal = preventivoBuilder.buffetDolci;
     });
+
+    print('flutter: [SYNC END] Sincronizzazione UI completata.');
+    // 🚨 DEBUG END 🚨
   }
 
   Future<void> _caricaDatiPreventivo(String id) async {
@@ -383,35 +448,552 @@ class _CreaPreventivoScreenState extends State<CreaPreventivoScreen> {
     );
   }
 
-  Widget _buildTipoPastoSelector() {
+  // 🟢 WIDGET MANCANTE: Navigazione (Footer)
+  Widget _buildNavigationControls() {
+    return Container(
+      padding: const EdgeInsets.all(16.0),
+      decoration: BoxDecoration(
+        color: Theme.of(context).scaffoldBackgroundColor,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.1),
+            spreadRadius: 0,
+            blurRadius: 4,
+            offset: const Offset(0, -2),
+          ),
+        ],
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          const SizedBox(width: 1),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              padding:
+                  const EdgeInsets.symmetric(vertical: 12, horizontal: 24),
+              textStyle:
+                  const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+            onPressed: () {
+              final builder =
+                  Provider.of<PreventivoBuilderProvider>(context, listen: false);
+
+              _commitMenuToProvider();
+
+              if (!builder.isPacchettoFisso && (builder.tipoPasto == null || builder.tipoPasto!.isEmpty)) {
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                    content: Text('Seleziona Pranzo o Cena per proseguire.')));
+                return;
+              }
+
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const ServiziExtraScreen()),
+              );
+            },
+            child: const Row(
+              children: [
+                Text('Servizi'),
+                SizedBox(width: 8),
+                Icon(Icons.arrow_forward_ios),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // 🟢 LOGICA ORARI: Seleziona l'orario di default
+  void _selectTime(bool isStart) async {
+    final builder = Provider.of<PreventivoBuilderProvider>(context, listen: false);
+    final isPranzo = builder.tipoPasto?.toLowerCase() == 'pranzo';
+    
+    // 🔑 Orari di default
+    TimeOfDay defaultTime;
+    if (isStart) {
+      // Inizio: Pranzo 12:00 / Cena 19:00
+      defaultTime = isPranzo ? const TimeOfDay(hour: 12, minute: 0) : const TimeOfDay(hour: 19, minute: 0);
+    } else {
+      // Fine: Pranzo 17:00 / Cena 01:00 (rappresentato come 01:00)
+      defaultTime = isPranzo ? const TimeOfDay(hour: 17, minute: 0) : const TimeOfDay(hour: 1, minute: 0);
+    }
+
+    final initialTime = isStart 
+        ? (builder.orarioInizio ?? defaultTime)
+        : (builder.orarioFine ?? defaultTime);
+
+    final picked = await showTimePicker(
+      context: context,
+      initialTime: initialTime,
+      builder: (BuildContext context, Widget? child) {
+        return MediaQuery(
+          data: MediaQuery.of(context).copyWith(alwaysUse24HourFormat: true),
+          child: child!,
+        );
+      },
+    );
+
+    if (picked != null) {
+      if (isStart) {
+        builder.setOrarioInizio(picked);
+      } else {
+        builder.setOrarioFine(picked);
+      }
+      setState(() {});
+    }
+  }
+
+  // 🟢 WIDGET NUOVO: Selettore Orari
+  Widget _buildOrarioSection() {
     return Consumer<PreventivoBuilderProvider>(
       builder: (context, builder, _) {
+        if (builder.isPacchettoFisso) return const SizedBox.shrink();
+        
+        final isTipoPastoSelected = builder.tipoPasto != null && builder.tipoPasto!.isNotEmpty;
+        final startText = builder.orarioInizio?.format(context) ?? 'Seleziona';
+        final endText = builder.orarioFine?.format(context) ?? 'Seleziona';
+        
         return Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: const [
-            SizedBox(height: 6),
-            TipoPastoField(required: true),
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SizedBox(height: 16),
+            Text('Orario Evento', style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: InkWell(
+                    onTap: isTipoPastoSelected ? () => _selectTime(true) : null,
+                    child: InputDecorator(
+                      decoration: InputDecoration(
+                        labelText: 'Inizio',
+                        border: const OutlineInputBorder(),
+                        enabled: isTipoPastoSelected,
+                        hintText: !isTipoPastoSelected ? 'Seleziona Pranzo/Cena' : null,
+                      ),
+                      child: Text(startText),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: InkWell(
+                    onTap: isTipoPastoSelected ? () => _selectTime(false) : null,
+                    child: InputDecorator(
+                      decoration: InputDecoration(
+                        labelText: 'Fine',
+                        border: const OutlineInputBorder(),
+                        enabled: isTipoPastoSelected,
+                        hintText: !isTipoPastoSelected ? 'Seleziona Pranzo/Cena' : null,
+                      ),
+                      child: Text(endText),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            const Divider(height: 1),
           ],
         );
       },
     );
   }
 
-  // 🔹 SOLO Aperitivo (rimane nella sezione “Extra veloci (menu)”)
+  Widget _buildBody(List<MenuTemplate> menuTemplates) {
+    final preventivoBuilder = Provider.of<PreventivoBuilderProvider>(context);
+    
+    const List<String> wizardSteps = ['Menu', 'Servizi', 'Cliente'];
+    final bool isPacchettoFisso = preventivoBuilder.isPacchettoFisso;
+
+    return Column(
+      children: [
+        // 1. WIZARD STEPPER (corretto con i parametri e lo step 0)
+        WizardStepper(
+          currentStep: 0, // Schermata Menu = Step 1 (Index 0)
+          steps: wizardSteps,
+          // onStepTapped: permette la navigazione verso Servizi (index 1)
+          onStepTapped: (index) {
+            if (index == 1) { 
+                // Qui dovresti idealmente replicare la validazione di _buildNavigationControls
+                // ma per ora navighiamo solo
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const ServiziExtraScreen()),
+                );
+            }
+          },
+        ),
+        const Divider(height: 1),
+        Expanded(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // 2. Selettore Menu/Pacchetto (Sempre in cima)
+                _buildTypeSelector(),
+
+                // 3. Selettore Pacchetto Fisso (condizionale)
+                _buildPacchettoSelector(),
+                
+                // --- SEZIONE MENU A PORTATE (Condizionale) ---
+                if (!isPacchettoFisso) ...[
+                  // 🔴 NUOVO ORDINE 1: SELETTORE TEMPLATE / PREZZO
+                  _buildMenuTemplateAndPrezzo(menuTemplates),
+
+                  // 🔴 NUOVO ORDINE 2: TIPO PASTO (Pranzo/Cena)
+                  _buildTipoPastoSelector(),
+
+                  // 🟢 INTEGRAZIONE ORARI
+                  _buildOrarioSection(),
+
+                  // 🔴 NUOVO ORDINE 3: APERITIVO DI BENVENUTO
+                  _buildAperitivoSection(),
+                  
+                  const SizedBox(height: 24),
+                  const Divider(),
+
+                  // Composizione menù
+                  _buildMenuComposition(),
+
+                  // Buffet di dolci
+                  const SizedBox(height: 16),
+                  _buildBuffetDolciSection(),
+
+                  const SizedBox(height: 16),
+
+                  // AGGIUNGI PORTATA
+                  Center(
+                    child: ElevatedButton.icon(
+                      icon: const Icon(Icons.add_circle_outline),
+                      label: const Text("Aggiungi Portata"),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.grey.shade200,
+                        foregroundColor: Colors.black87,
+                      ),
+                      onPressed: _mostraDialogAggiungiPortata,
+                    ),
+                  ),
+                ],
+                // ---------------------------------------------
+              ],
+            ),
+          ),
+        ),
+        // FOOTER NAVIGAZIONE
+        _buildNavigationControls(),
+      ],
+    );
+  }
+
+
+  // --- I TUOI WIDGET ORIGINALI, INCLUSI _buildTypeSelector E _buildPacchettoSelector ---
+  
+  // 🟢 WIDGET MODIFICATO: Selettore del tipo di preventivo (Menu/Pacchetto) - Usa ToggleButtons
+// Modifica in lib/screens/crea_preventivo_screen.dart (nel metodo _buildTypeSelector)
+
+Widget _buildTypeSelector() {
+    return Consumer<PreventivoBuilderProvider>(
+      builder: (context, builder, _) {
+        final bool isPacchetto = builder.isPacchettoFisso;
+        final List<bool> isSelected = [!isPacchetto, isPacchetto];
+
+        // 🔑 NOTA: 'selectionColor' dovrebbe essere definito nel contesto padre come Colors.pink o Theme.of(context).colorScheme.secondary.
+        // Assumo che sia Colors.pink o una variabile di tema rosa.
+        final Color selectionColor = Theme.of(context).colorScheme.secondary; 
+        
+        // 🔑 Colore del testo non selezionato (Nero)
+        final Color unselectedTextColor = Colors.black;
+        
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 16.0),
+          child: ToggleButtons(
+            isSelected: isSelected,
+            onPressed: (index) {
+              final bool newIsPacchetto = index == 1;
+              if (newIsPacchetto != isPacchetto) {
+                
+                // 1. Aggiorna il Provider (causa un rebuild)
+                builder.setPacchettoFissoMode(newIsPacchetto);
+
+                // 2. Aggiorna lo stato locale immediatamente per evitare inconsistenze
+                if (newIsPacchetto) {
+                  // Passa a Pacchetto Fisso
+                  builder.setMenu({});
+                  builder.resetPrezzoMenu();
+                  builder.setTipoPasto(null);
+                  
+                  // 🔑 FIX: Aggiunto setState per pulire lo stato locale del menu a portate
+                  setState(() { 
+                    _menuInCostruzione = {};
+                    _selectedTemplate = null;
+                  });
+
+                } else {
+                  // Passa a Menu a Portate
+                  builder.resetPacchettoFisso();
+                  
+                  // 🔑 FIX: Aggiunto setState per pulire lo stato locale del pacchetto
+                  setState(() {
+                    _selectedPacchetto = null;
+                  });
+                }
+              }
+            },
+            borderRadius: BorderRadius.circular(8),
+            
+            // 🔑 MODIFICA CHIAVE 1: Sfondo Rosa e Bordo Rosa
+            selectedBorderColor: selectionColor, 
+            fillColor: const Color.fromARGB(255, 255, 203, 238),
+            
+            // 🔑 MODIFICA CHIAVE 2: Il testo selezionato è NERO
+            selectedColor: Colors.black, 
+            
+            // 🔑 MODIFICA CHIAVE 3: Colore del testo NON selezionato è NERO
+            color: unselectedTextColor, 
+            
+            constraints: BoxConstraints.expand(
+                width: (MediaQuery.of(context).size.width - 32) / 2 - 8,
+                height: 48),
+            children: [
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Text('Menù a portate', style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    // 🔑 Corregge il testo: se selezionato è NERO, altrimenti NERO.
+                    color: isSelected[0] ? Colors.black : unselectedTextColor,
+                  )),
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Text('Pacchetto Fisso', style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    // 🔑 Corregge il testo: se selezionato è NERO, altrimenti NERO.
+                    color: isSelected[1] ? Colors.black : unselectedTextColor,
+                  )),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+  // 🟢 NUOVO WIDGET: Selettore del pacchetto evento
+
+  Widget _buildPacchettoSelector() {
+    return Consumer<PreventivoBuilderProvider>(
+      builder: (context, builder, _) {
+        if (!builder.isPacchettoFisso) {
+            // 🔑 FIX: Se non siamo in modalità Pacchetto Fisso, non mostrare nulla.
+            return const SizedBox.shrink(); 
+        }
+
+        // Riferimento al pacchetto selezionato (per accedere alle descrizioni separate)
+        final PacchettoEvento? pacchetto = _selectedPacchetto;
+
+        // Copia ordinata (nome)
+        final List<PacchettoEvento> sorted = List<PacchettoEvento>.from(_pacchettiEventi)
+            ..sort((a, b) => a.nome.toLowerCase().compareTo(b.nome.toLowerCase()));
+        
+        // 🟢 DEFINIZIONE STILI GERARCHICI
+        final TextStyle priceStyle = Theme.of(context).textTheme.titleMedium!.copyWith(
+          fontWeight: FontWeight.bold, 
+          fontSize: 22, // Stile del prezzo/nome evento
+        );
+        final TextStyle desc12Style = Theme.of(context).textTheme.bodyLarge!.copyWith(
+          fontSize: 17, // Leggermente più piccolo del prezzo, ma grande (17px)
+          color: Colors.grey.shade700,
+        );
+        final TextStyle desc3Style = Theme.of(context).textTheme.bodyMedium!.copyWith(
+          fontSize: 15, // Più piccolo (15px)
+          color: Colors.grey,
+        );
+        final TextStyle proposalStyle = desc12Style; // Stile della proposta gastronomica (uguale a desc12Style)
+        // -------------------------------------------------------------
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // 🔑 FIX: Titolo "Seleziona Pacchetto Fisso" è ora all'interno del DropdownButtonFormField.
+            // Lo usiamo qui solo come contenitore generale se il pacchetto è null
+            if (pacchetto == null)
+              Container(
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.secondary.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                child: Row(
+                    children: [
+                        Text('Tipo evento:', 
+                             style: Theme.of(context).textTheme.titleMedium!.copyWith(color: Color.fromRGBO(0, 0, 0, 1))
+                        )
+                    ]
+                )
+              )
+            else
+              const SizedBox.shrink(),
+
+            DropdownButtonFormField<PacchettoEvento?>(
+              value: pacchetto, 
+              items: [
+                const DropdownMenuItem<PacchettoEvento?>(
+                  value: null,
+                  child: Text('Seleziona Pacchetto Fisso'),
+                ),
+                ...sorted.map((p) {
+                  return DropdownMenuItem<PacchettoEvento>(
+                    value: p,
+                    child: Text(
+                        '${p.nome} (€${p.prezzoFisso.toStringAsFixed(2)})'),
+                  );
+                }).toList(),
+              ],
+              onChanged: (PacchettoEvento? newValue) {
+                setState(() => _selectedPacchetto = newValue); 
+                builder.setPacchettoFisso(newValue);
+              },
+              decoration: const InputDecoration(
+                labelText: 'Pacchetto',
+                border: OutlineInputBorder(),
+              ),
+              isExpanded: true,
+            ),
+            
+            // 🌟 VISUALIZZAZIONE DEI DETTAGLI DEL PACCHETTO SELEZIONATO
+            if (pacchetto != null) ...[
+                const SizedBox(height: 24),
+                Card(
+                    child: Padding(
+                        padding: const EdgeInsets.all(16.0),
+                        child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                                // 1. NOME EVENTO (Stile = Prezzo)
+                                Text(
+                                    pacchetto.nome,
+                                    style: priceStyle,
+                                ),
+                                const Divider(height: 16),
+
+                                // 2. DESCRIZIONE 1 (Condizioni)
+                                Text(
+                                    pacchetto.descrizione_1,
+                                    style: desc12Style,
+                                ),
+                                const SizedBox(height: 8),
+
+                                // 3. DESCRIZIONE 2 (Promozione)
+                                Text(
+                                    pacchetto.descrizione_2,
+                                    style: desc12Style,
+                                ),
+                                const SizedBox(height: 16),
+                                
+                                // 4. PROPOSTA GASTRONOMICA
+                                Text(
+                                    pacchetto.propostaGastronomica,
+                                    style: proposalStyle,
+                                ),
+                                const Divider(height: 16),
+                                
+                                // 5. PREZZO FISSO (Stile = Prezzo)
+                                Text(
+                                    'Prezzo Fisso: € ${pacchetto.prezzoFisso.toStringAsFixed(2)}',
+                                    style: priceStyle,
+                                ),
+                                const SizedBox(height: 16),
+
+                                // 6. DESCRIZIONE 3 (Numero persone)
+                                Text(
+                                    pacchetto.descrizione_3,
+                                    style: desc3Style,
+                                ),
+                            ],
+                        ),
+                    ),
+                ),
+                const Divider(height: 32, thickness: 1),
+            ],
+            // -----------------------------------------------------------------
+          ],
+        );
+      },
+    );
+  }
+
+
+// lib/screens/crea_preventivo_screen.dart (funzione _buildTipoPastoSelector)
+
+  Widget _buildTipoPastoSelector() {
+    return Consumer<PreventivoBuilderProvider>(
+      builder: (context, builder, _) {
+        // 🟢 Mostra SOLO se è modalità Menu a portate
+        if (builder.isPacchettoFisso) return const SizedBox.shrink();
+
+        // 🔑 Logica di Pre-valorizzazione Orari
+        final String? currentTipoPasto = builder.tipoPasto;
+        
+        // Applica l'orario di default se il tipo pasto è selezionato
+        // MA SOLO se gli orari non sono ancora stati impostati dall'utente.
+        if (currentTipoPasto != null && 
+            currentTipoPasto.isNotEmpty && 
+            builder.orarioInizio == null && 
+            builder.orarioFine == null) {
+              
+              final isPranzo = currentTipoPasto.toLowerCase() == 'pranzo';
+              final TimeOfDay defaultStart = isPranzo ? const TimeOfDay(hour: 12, minute: 0) : const TimeOfDay(hour: 19, minute: 0);
+              final TimeOfDay defaultEnd = isPranzo ? const TimeOfDay(hour: 17, minute: 0) : const TimeOfDay(hour: 1, minute: 0);
+              
+              // ⚠️ Nota: Usiamo addPostFrameCallback per evitare di chiamare setState/notifyListeners
+              // direttamente durante la fase di build del Consumer.
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                 builder.setOrarioInizio(defaultStart);
+                 builder.setOrarioFine(defaultEnd);
+              });
+        }
+        // ------------------------------------
+        
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const SizedBox(height: 6),
+            // Rimosso il parametro 'onChanged' che causava l'errore
+            const TipoPastoField(required: true), 
+            
+            // Divider richiesto
+            const Divider(
+              height: 24, 
+              thickness: 1, 
+            ),
+          ],
+        );
+      },
+    );
+  }
+  
+  
+   // 🔹 SOLO Aperitivo (rimane nella sezione “Extra veloci (menu)”)
   Widget _buildAperitivoSection() {
     return Consumer<PreventivoBuilderProvider>(
       builder: (context, b, _) {
+        // 🟢 Mostra SOLO se è modalità Menu a portate
+        if (b.isPacchettoFisso) return const SizedBox.shrink();
+
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const SizedBox(height: 12),
-            Text('Extra veloci (menu)',
-                style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 8),
             Card(
               margin: const EdgeInsets.only(bottom: 8),
               child: SwitchListTile(
-                title: const Text('Aperitivo di benvenuto'),
+                title: Text(
+                  'Aperitivo di benvenuto',
+                  // Applica lo stile condizionale
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        color: _aperitivoBenvenutoLocal ? null : Colors.grey,
+                      ),
+                ),
                 value: _aperitivoBenvenutoLocal,
                 onChanged: (v) {
                   setState(() => _aperitivoBenvenutoLocal = v);
@@ -425,24 +1007,32 @@ class _CreaPreventivoScreenState extends State<CreaPreventivoScreen> {
     );
   }
 
+
   // 🔹 SOLO Buffet di dolci (SPOSTATO in fondo dopo la composizione del menu)
   Widget _buildBuffetDolciSection() {
     return Consumer<PreventivoBuilderProvider>(
       builder: (context, b, _) {
+        // 🟢 Mostra SOLO se è modalità Menu a portate
+        if (b.isPacchettoFisso) return const SizedBox.shrink();
+
         final bool dolci = _buffetDolciLocal;
 
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Buffet di dolci',
-                style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 8),
+            // Ho rimosso il Text e la SizedBox superiore, come concordato in precedenza
             Card(
               margin: const EdgeInsets.only(bottom: 8),
               child: Column(
                 children: [
                   SwitchListTile(
-                    title: const Text('Abilita Buffet di dolci'),
+                    title: Text(
+                      'Buffet di dolci', 
+                      // Stile condizionale applicato qui
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            color: dolci ? null : Colors.grey,
+                          ),
+                    ),
                     value: dolci,
                     onChanged: (v) {
                       setState(() => _buffetDolciLocal = v);
@@ -475,382 +1065,62 @@ class _CreaPreventivoScreenState extends State<CreaPreventivoScreen> {
     );
   }
 
-  Future<void> _firmaEConferma() async {
-    final String? preventivoId = widget.preventivoId;
+  // Selettore del Template (solo per menù a portate)
+  Widget _buildMenuTemplateAndPrezzo(List<MenuTemplate> templates) {
+    return Consumer<PreventivoBuilderProvider>(
+      builder: (context, builder, _) {
+        // 🟢 Mostra SOLO se è modalità Menu a portate
+        if (builder.isPacchettoFisso) return const SizedBox.shrink();
 
-    if (preventivoId == null || preventivoId.isEmpty) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text(
-              'Devi prima salvare/creare il preventivo per ottenere un ID.')));
-      return;
-    }
-
-    final Uint8List? pngBytes = await showDialog<Uint8List?>(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => const FirmaDialog(),
-    );
-
-    if (pngBytes == null || pngBytes.isEmpty) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Firma annullata o vuota.')));
-      return;
-    }
-
-    try {
-      await FirebaseFirestore.instance
-          .collection('preventivi')
-          .doc(preventivoId)
-          .update({
-        'status': 'Confermato',
-        'data_conferma': Timestamp.now(),
-        // 'firma_url': urlDaStorage,
-      });
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Preventivo confermato!')));
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Errore: $e')));
-      }
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    // Usa Consumer2 per stato e dati
-    return Consumer2<MenuTemplatesProvider, PiattiProvider>(
-      builder: (context, templatesProvider, piattiProvider, child) {
-        final bool isDataLoading =
-            templatesProvider.isLoading || piattiProvider.isLoading || _isLoading;
-        final List<MenuTemplate> templates = templatesProvider.templates;
-
-        final Widget appBarContent = AppBar(
-          title: Text(widget.preventivoId == null
-              ? 'Crea Preventivo'
-              : 'Modifica Preventivo'),
-          leading: IconButton(
-            icon: const Icon(Icons.close),
-            onPressed: () {
-              if (widget.preventivoId == null) {
-                Provider.of<PreventivoBuilderProvider>(context, listen: false)
-                    .reset();
-              }
-              Navigator.of(context).pop();
-            },
-          ),
-          actions: [
-            // Badge STATUS
-            Consumer<PreventivoBuilderProvider>(
-              builder: (context, prov, child) {
-                final status = prov.status ?? 'Bozza';
-                final isConfermato = status.toLowerCase() == 'confermato';
-                final statusText = status.toUpperCase();
-
-                if ((prov.preventivoId ?? '').isEmpty) {
-                  return const SizedBox.shrink();
-                }
-
-                return Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 8.0),
-                  child: Center(
-                    child: Chip(
-                      label: Text(
-                        statusText,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 12,
-                        ),
-                      ),
-                      backgroundColor: isConfermato
-                          ? Colors.green.shade600
-                          : Colors.red.shade600,
-                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 6, vertical: 0),
-                    ),
-                  ),
-                );
-              },
-            ),
-
-            // Salva
-            if (!_isSaving)
-              IconButton(
-                tooltip: 'Salva stato attuale',
-                icon: const Icon(Icons.save),
-                onPressed: _salvaPreventivo,
-              )
-            else
-              const Padding(
-                padding: EdgeInsets.all(16.0),
-                child: SizedBox(
-                  width: 24,
-                  height: 24,
-                  child: CircularProgressIndicator(
-                    color: Colors.white,
-                    strokeWidth: 2,
-                  ),
-                ),
-              ),
-
-            // Preventivi
-            IconButton(
-              tooltip: 'Torna ai Preventivi',
-              icon: const Icon(Icons.inventory_2_outlined),
-              onPressed: () {
-                Navigator.of(context).popUntil((route) => route.isFirst);
-                Navigator.of(context).push(MaterialPageRoute(
-                    builder: (_) => const ArchivioPreventiviScreen()));
-              },
-            ),
-
-            // Home
-            IconButton(
-              tooltip: 'Torna alla Home',
-              icon: const Icon(Icons.home_outlined),
-              onPressed: () {
-                Navigator.of(context).popUntil((route) => route.isFirst);
-              },
-            ),
-          ],
-        );
-
-        return Scaffold(
-          appBar: appBarContent as PreferredSizeWidget?,
-          body: isDataLoading
-              ? const Center(child: CircularProgressIndicator())
-              : templates.isEmpty
-                  ? const Center(
-                      child: Text(
-                          "Nessun menu predefinito trovato. Aggiungi un template nella sezione Setup."))
-                  : _buildBody(templates),
-        );
-      },
-    );
-  }
-
-  Widget _buildBody(List<MenuTemplate> menuTemplates) {
-    final preventivoBuilder = Provider.of<PreventivoBuilderProvider>(context);
-    final bool mostraPrezzoManuale = _selectedTemplate == null;
-
-    return Column(
-      children: [
-        WizardStepper(
-          currentStep: 0,
-          steps: const ['Menu', 'Servizi', 'Cliente'],
-          onStepTapped: (index) {},
-        ),
-        const Divider(height: 1),
-        Expanded(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(16.0),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SizedBox(height: 16),
+            Text('Selezione Template e Prezzo',
+                style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 8),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _buildTemplateSelector(menuTemplates),
-
-                if (mostraPrezzoManuale) ...[
-                  const SizedBox(height: 12),
-                  TextFormField(
+                Expanded(
+                  flex: 3,
+                  child: _buildTemplateSelector(templates),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  flex: 2,
+                  child: TextFormField(
                     controller: _prezzoManualeController,
-                    decoration: const InputDecoration(
-                      labelText: 'Prezzo Menu (a persona)',
-                      prefixText: '€ ',
-                      border: OutlineInputBorder(),
-                    ),
                     keyboardType:
                         const TextInputType.numberWithOptions(decimal: true),
-                    onChanged: (value) {
-                      final prezzo =
-                          double.tryParse(value.replaceAll(',', '.')) ?? 0.0;
-                      preventivoBuilder.setPrezzoMenuAdulto(prezzo);
-                    },
-                  ),
-                ],
-
-                const SizedBox(height: 12),
-                _buildTipoPastoSelector(),
-
-                // 🔹 Aperitivo (rimane qui)
-                _buildAperitivoSection(),
-
-                const SizedBox(height: 24),
-                const Divider(),
-
-                // Composizione menù
-                _buildMenuComposition(),
-
-                // 🔹 Buffet di dolci (SPOSTATO) — richiesto “alla fine, dopo portata_generica”
-                const SizedBox(height: 16),
-                _buildBuffetDolciSection(),
-
-                const SizedBox(height: 16),
-
-                Center(
-                  child: ElevatedButton.icon(
-                    icon: const Icon(Icons.add_circle_outline),
-                    label: const Text("Aggiungi Portata"),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.grey.shade200,
-                      foregroundColor: Colors.black87,
+                    decoration: const InputDecoration(
+                      labelText: 'Prezzo Adulto (€)',
+                      border: OutlineInputBorder(),
                     ),
-                    onPressed: _mostraDialogAggiungiPortata,
+                    onChanged: (v) {
+                      final cleaned = v.replaceAll(',', '.');
+                      final prezzo = double.tryParse(cleaned) ?? 0.0;
+                      builder.setPrezzoMenuAdulto(prezzo);
+                    },
                   ),
                 ),
               ],
             ),
-          ),
-        ),
-        _buildNavigationControls(),
-      ],
-    );
-  }
-
-  Widget _buildNavigationControls() {
-    return Container(
-      padding: const EdgeInsets.all(16.0),
-      decoration: BoxDecoration(
-        color: Theme.of(context).scaffoldBackgroundColor,
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.1),
-            spreadRadius: 0,
-            blurRadius: 4,
-            offset: const Offset(0, -2),
-          ),
-        ],
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          const SizedBox(width: 1),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              padding:
-                  const EdgeInsets.symmetric(vertical: 12, horizontal: 24),
-              textStyle:
-                  const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-            ),
-            onPressed: () {
-              final builder =
-                  Provider.of<PreventivoBuilderProvider>(context, listen: false);
-
-              // Commit Menu
-              _commitMenuToProvider();
-
-              // Validazione
-              if (builder.tipoPasto == null || builder.tipoPasto!.isEmpty) {
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                    content: Text('Seleziona Pranzo o Cena per proseguire.')));
-                return;
-              }
-
-              // Navigazione
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const ServiziExtraScreen()),
-              );
-            },
-            child: const Row(
-              children: [
-                Text('Servizi'),
-                SizedBox(width: 8),
-                Icon(Icons.arrow_forward_ios),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildTemplateSelector(List<MenuTemplate> templates) {
-    // Usa idMenu per l’istanza corretta
-    MenuTemplate? currentTemplateInList;
-
-    if (_selectedTemplate != null) {
-      try {
-        currentTemplateInList = templates.firstWhere(
-            (template) => template.idMenu == _selectedTemplate!.idMenu);
-      } catch (e) {
-        currentTemplateInList = null;
-      }
-    }
-
-    final MenuTemplate? dropdownValue = currentTemplateInList;
-
-    return DropdownButtonFormField<MenuTemplate?>(
-      value: dropdownValue,
-      items: [
-        const DropdownMenuItem<MenuTemplate?>(
-            value: null, child: Text('Crea menu personalizzato')),
-        ...templates.map((template) {
-          return DropdownMenuItem<MenuTemplate>(
-            value: template,
-            child: Text(
-                '${template.nomeMenu} (€${template.prezzo.toStringAsFixed(2)})'),
-          );
-        }).toList(),
-      ],
-      onChanged: (MenuTemplate? newValue) {
-        final builder =
-            Provider.of<PreventivoBuilderProvider>(context, listen: false);
-        setState(() => _selectedTemplate = newValue);
-
-        _aggiornaMenuDaTemplate(newValue);
-
-        if (newValue != null) {
-          builder.setPrezzoDaTemplate(newValue);
-          _prezzoManualeController.text =
-              newValue.prezzo.toStringAsFixed(2).replaceAll('.', ',');
-        } else {
-          builder.resetPrezzoMenu();
-          _prezzoManualeController.clear();
-        }
+            const SizedBox(height: 16),
+            const Divider(height: 1),
+            const SizedBox(height: 16),
+          ],
+        );
       },
-      decoration: const InputDecoration(
-        labelText: 'Punto di Partenza',
-        border: OutlineInputBorder(),
-      ),
-      isExpanded: true,
     );
   }
 
-  int _tipologiaRank(String? tipologia) {
-    switch ((tipologia ?? '').toLowerCase().trim()) {
-      case 'carne':
-        return 0;
-      case 'pesce':
-        return 1;
-      case 'misti':
-        return 2;
-      case 'neutri':
-        return 3;
-      default:
-        return 100;
-    }
-  }
-
-  Widget _seasonIconFor(String? stagione) {
-    switch ((stagione ?? '').toLowerCase()) {
-      case 'inverno':
-        return const Icon(Icons.ac_unit, size: 18, color: Colors.lightBlue);
-      case 'estate':
-        return const Icon(Icons.wb_sunny, size: 18, color: Colors.amber);
-      case 'evergreen':
-        return const Icon(Icons.eco, size: 18, color: Colors.green);
-      default:
-        return const SizedBox.shrink();
-    }
-  }
-
+  // Composizione del Menu (solo per menù a portate)
   Widget _buildMenuComposition() {
+    // 🟢 Logica condizionale aggiunta
+    final builder = Provider.of<PreventivoBuilderProvider>(context, listen: false);
+    if (builder.isPacchettoFisso) return const SizedBox.shrink();
+
     const ordineCorrettoPortate = [
       'antipasto',
       'primo',
@@ -941,7 +1211,8 @@ class _CreaPreventivoScreenState extends State<CreaPreventivoScreen> {
                                 child: Text(
                                   entry.value.nome,
                                   style: const TextStyle(height: 1.2),
-                                  maxLines: 2,
+                                  // 🔑 CORREZIONE DEL PROBLEMA: Ripristina maxLines 2
+                                  maxLines: 2, 
                                   overflow: TextOverflow.ellipsis,
                                 ),
                               ),
@@ -989,6 +1260,93 @@ class _CreaPreventivoScreenState extends State<CreaPreventivoScreen> {
         );
       }).toList(),
     );
+  }
+
+
+  Widget _buildTemplateSelector(List<MenuTemplate> templates) {
+    // Copia ordinata per prezzo crescente (stabile)
+    final List<MenuTemplate> sorted = List<MenuTemplate>.from(templates)
+      ..sort((a, b) {
+        final c = a.prezzo.compareTo(b.prezzo);
+        return c != 0 ? c : a.nomeMenu.toLowerCase().compareTo(b.nomeMenu.toLowerCase());
+      });
+
+    // Usa idMenu per l’istanza corretta, presa dalla lista ordinata
+    MenuTemplate? currentTemplateInList;
+    if (_selectedTemplate != null) {
+      try {
+        currentTemplateInList = sorted.firstWhere(
+          (t) => t.idMenu == _selectedTemplate!.idMenu,
+        );
+      } catch (_) {
+        currentTemplateInList = null;
+      }
+    }
+
+    final MenuTemplate? dropdownValue = currentTemplateInList;
+
+    return DropdownButtonFormField<MenuTemplate?>(
+      value: dropdownValue,
+      items: [
+        const DropdownMenuItem<MenuTemplate?>(
+          value: null,
+          child: Text('Crea menu personalizzato'),
+        ),
+        ...sorted.map((template) {
+          return DropdownMenuItem<MenuTemplate>(
+            value: template,
+            child: Text('${template.nomeMenu} (€${template.prezzo.toStringAsFixed(2)})'),
+          );
+        }).toList(),
+      ],
+      onChanged: (MenuTemplate? newValue) {
+        final builder = Provider.of<PreventivoBuilderProvider>(context, listen: false);
+        setState(() => _selectedTemplate = newValue);
+
+        _aggiornaMenuDaTemplate(newValue);
+
+        if (newValue != null) {
+          builder.setPrezzoDaTemplate(newValue);
+          _prezzoManualeController.text = newValue.prezzo.toStringAsFixed(2).replaceAll('.', ',');
+        } else {
+          builder.resetPrezzoMenu();
+          _prezzoManualeController.clear();
+        }
+      },
+      decoration: const InputDecoration(
+        labelText: 'Punto di Partenza',
+        border: OutlineInputBorder(),
+      ),
+      isExpanded: true,
+    );
+  }
+
+  int _tipologiaRank(String? tipologia) {
+    switch ((tipologia ?? '').toLowerCase().trim()) {
+      case 'carne':
+        return 0;
+      case 'pesce':
+        return 1;
+      case 'misti':
+        return 2;
+      case 'neutri':
+        return 3;
+      default:
+        return 100;
+    }
+  }
+
+  Widget _seasonIconFor(String? stagione) {
+    switch ((stagione ?? '').toLowerCase()) {
+      case 'inverno':
+        return const Icon(Icons.ac_unit, size: 18, color: Colors.lightBlue);
+      case 'estate':
+        return const Icon(Icons.wb_sunny, size: 18, color: Colors.amber);
+      case 'evergreen':
+        return const Icon(Icons.eco, size: 18, color: Colors.green);
+      default:
+        return const SizedBox.shrink();
+    }
   }
 
   Future<void> _mostraSheetSelezionePiatto(String genere) async {
@@ -1212,4 +1570,124 @@ class _CreaPreventivoScreenState extends State<CreaPreventivoScreen> {
       },
     );
   }
+
+
+@override
+Widget build(BuildContext context) {
+    // Usa Consumer2 per stato e dati
+    return Consumer2<MenuTemplatesProvider, PiattiProvider>(
+      builder: (context, templatesProvider, piattiProvider, child) {
+        final bool isDataLoading =
+            templatesProvider.isLoading || piattiProvider.isLoading || _isLoading;
+        final List<MenuTemplate> templates = templatesProvider.templates;
+
+        final Widget appBarContent = AppBar(
+          title: Text(widget.preventivoId == null
+              ? 'Crea Preventivo'
+              : 'Modifica Preventivo'),
+          leading: IconButton(
+            icon: const Icon(Icons.close),
+            onPressed: () {
+              if (widget.preventivoId == null) {
+                Provider.of<PreventivoBuilderProvider>(context, listen: false)
+                    .reset();
+              }
+              Navigator.of(context).pop();
+            },
+          ),
+          actions: [
+            // Badge STATUS
+            Consumer<PreventivoBuilderProvider>(
+              builder: (context, prov, child) {
+                final status = prov.status ?? 'Bozza';
+                final isConfermato = status.toLowerCase() == 'confermato';
+                final statusText = status.toUpperCase();
+
+                if ((prov.preventivoId ?? '').isEmpty) {
+                  return const SizedBox.shrink();
+                }
+
+                return Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 8.0),
+                  child: Center(
+                    child: Chip(
+                      label: Text(
+                        statusText,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 12,
+                        ),
+                      ),
+                      backgroundColor: isConfermato
+                          ? Colors.green.shade600
+                          : Colors.red.shade600,
+                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 0),
+                    ),
+                  ),
+                );
+              },
+            ),
+
+            // Salva
+            if (!_isSaving)
+              IconButton(
+                tooltip: 'Salva stato attuale',
+                icon: const Icon(Icons.save),
+                onPressed: _salvaPreventivo,
+              )
+            else
+              const Padding(
+                padding: EdgeInsets.all(16.0),
+                child: SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(
+                    color: Colors.white,
+                    strokeWidth: 2,
+                  ),
+                ),
+              ),
+
+            // Preventivi
+            IconButton(
+              tooltip: 'Torna ai Preventivi',
+              icon: const Icon(Icons.inventory_2_outlined),
+              onPressed: () {
+                Navigator.of(context).popUntil((route) => route.isFirst);
+                Navigator.of(context).push(MaterialPageRoute(
+                    builder: (_) => const ArchivioPreventiviScreen()));
+              },
+            ),
+
+            // Home
+            IconButton(
+              tooltip: 'Torna alla Home',
+              icon: const Icon(Icons.home_outlined),
+              onPressed: () {
+                Navigator.of(context).popUntil((route) => route.isFirst);
+              },
+            ),
+          ],
+        );
+
+        return Scaffold(
+          appBar: appBarContent as PreferredSizeWidget?,
+          body: isDataLoading
+              ? const Center(child: CircularProgressIndicator())
+              : templates.isEmpty
+                  ? const Center(
+                      child: Text(
+                          "Nessun menu predefinito trovato. Aggiungi un template nella sezione Setup."))
+                  // CHIAMATA A _buildBody (che era mancante)
+                  : _buildBody(templates),
+          // 🟢 Il navigation control (footer) è gestito all'interno di _buildBody.
+        );
+      },
+    );
+  }
+
+
 }

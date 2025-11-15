@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:provider/provider.dart'; // Import per usare il Provider nell'Update
+import 'package:firebase_auth/firebase_auth.dart'; // ⬅️ AGGIUNTO: per ottenere uid
 import '../models/cliente.dart';
 import '../providers/clienti_provider.dart'; // Import per la logica di aggiornamento
 
@@ -65,8 +66,6 @@ class _GestisciContattoScreenState extends State<GestisciContattoScreen> {
     super.dispose();
   }
 
-
-
   Future<void> _salvaContatto() async {
     if (!_formKey.currentState!.validate() || _isLoading) return;
     
@@ -85,9 +84,9 @@ class _GestisciContattoScreenState extends State<GestisciContattoScreen> {
       // 🚨 LOGICA DI CONTROLLO DUPLICATI 🚨
       if (!_isModifica) {
         final List<Cliente> duplicati = await provider.checkDuplicateContact(
-            ragioneSociale: ragioneSociale,
-            telefono01: telefono01,
-            // currentContactId non è necessario in modalità creazione
+          ragioneSociale: ragioneSociale,
+          telefono01: telefono01,
+          // currentContactId non è necessario in modalità creazione
         );
 
         if (duplicati.isNotEmpty) {
@@ -122,12 +121,23 @@ class _GestisciContattoScreenState extends State<GestisciContattoScreen> {
           dataToSave,
         );
         if (aggiornato == null) {
-            throw Exception(provider.error ?? "Aggiornamento fallito dal Provider.");
+          throw Exception(provider.error ?? "Aggiornamento fallito dal Provider.");
         }
       } else {
         // --- LOGICA CREAZIONE (Add) ---
+        // ⬇️ MODIFICA MINIMA: aggiungo createdBy richiesto dalle regole (+ createdAt facoltativo)
         final String collectionName = widget.tipoContatto == 'cliente' ? 'clienti' : 'fornitori';
-        await FirebaseFirestore.instance.collection(collectionName).add(dataToSave);
+
+        final uid = FirebaseAuth.instance.currentUser?.uid;
+        if (uid == null) {
+          throw Exception('Utente non autenticato');
+        }
+
+        await FirebaseFirestore.instance.collection(collectionName).add({
+          ...dataToSave,
+          'createdBy': uid,                         // richiesto dalle regole
+          'createdAt': FieldValue.serverTimestamp() // opzionale
+        });
       }
       
       dbSuccess = true; 
@@ -152,66 +162,60 @@ class _GestisciContattoScreenState extends State<GestisciContattoScreen> {
 
       } else if (finalErrorMessage != null) {
         ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(finalErrorMessage), backgroundColor: Colors.red)
+          SnackBar(content: Text(finalErrorMessage), backgroundColor: Colors.red)
         );
       }
     }
   } 
   
-
   Future<bool> _mostraAvvisoDuplicato(List<Cliente> duplicati) async {
     final Map<String, int> conteggi = {};
     for (final c in duplicati) {
-        final key = c.tipo == 'cliente' ? 'Cliente' : 'Fornitore';
-        conteggi[key] = (conteggi[key] ?? 0) + 1;
+      final key = c.tipo == 'cliente' ? 'Cliente' : 'Fornitore';
+      conteggi[key] = (conteggi[key] ?? 0) + 1;
     }
 
     final String message = conteggi.entries.map((e) => "${e.value} ${e.key}").join(' e ');
     final String dettaglio = duplicati.map((c) {
-        final tipo = c.tipo == 'cliente' ? 'Cliente' : 'Fornitore';
-        final nome = c.ragioneSociale ?? 'N/A';
-        return '$tipo: $nome (Tel: ${c.telefono01 ?? 'N/A'})';
+      final tipo = c.tipo == 'cliente' ? 'Cliente' : 'Fornitore';
+      final nome = c.ragioneSociale ?? 'N/A';
+      return '$tipo: $nome (Tel: ${c.telefono01 ?? 'N/A'})';
     }).join('\n');
     
     return await showDialog<bool>(
-        context: context,
-        barrierDismissible: false,
-        builder: (ctx) => AlertDialog(
-            title: const Text('ATTENZIONE: Contatto Esistente!'),
-            content: SingleChildScrollView(
-                child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                        Text('Sono stati trovati $message con nome o telefono simile.', style: const TextStyle(fontWeight: FontWeight.bold)),
-                        const SizedBox(height: 10),
-                        const Text('Dettagli trovati:', style: TextStyle(fontStyle: FontStyle.italic)),
-                        Text(dettaglio),
-                        const SizedBox(height: 15),
-                        const Text('Vuoi salvare comunque o interrompere per aggiornare il contatto?',
-                            style: TextStyle(color: Colors.red)),
-                    ],
-                ),
-            ),
-            actions: [
-                TextButton(
-                    onPressed: () => Navigator.of(ctx).pop(false),
-                    child: const Text('Annulla', style: TextStyle(fontWeight: FontWeight.bold)),
-                ),
-                ElevatedButton(
-                    onPressed: () => Navigator.of(ctx).pop(true),
-                    child: const Text('Salva comunque'),
-                ),
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text('ATTENZIONE: Contatto Esistente!'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Sono stati trovati $message con nome o telefono simile.', style: const TextStyle(fontWeight: FontWeight.bold)),
+              const SizedBox(height: 10),
+              const Text('Dettagli trovati:', style: TextStyle(fontStyle: FontStyle.italic)),
+              Text(dettaglio),
+              const SizedBox(height: 15),
+              const Text('Vuoi salvare comunque o interrompere per aggiornare il contatto?',
+                style: TextStyle(color: Colors.red)),
             ],
+          ),
         ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Annulla', style: TextStyle(fontWeight: FontWeight.bold)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Salva comunque'),
+          ),
+        ],
+      ),
     ) ?? false;
   }
 
-
-
-
-
-  
   // Questa funzione resta identica, ma dovrebbe usare i ruoli dal Provider in futuro
   Future<void> _mostraDialogSelezioneRuolo() async {
     // Per ora usiamo i ruoli hardcoded, in futuro potremmo usare provider.ruoliServizi
@@ -333,8 +337,8 @@ class _GestisciContattoScreenState extends State<GestisciContattoScreen> {
 }
 
 extension StringExtension on String {
-    String capitalize() {
-      if (isEmpty) return this;
-      return "${this[0].toUpperCase()}${substring(1).toLowerCase()}";
-    }
+  String capitalize() {
+    if (isEmpty) return this;
+    return "${this[0].toUpperCase()}${substring(1).toLowerCase()}";
+  }
 }

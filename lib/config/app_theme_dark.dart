@@ -3,13 +3,13 @@ import 'package:flutter/material.dart';
 // PASSO 1: Nuova palette di colori "Moderna e Fredda" 🎨
 class AppColors {
   // Colori Principali
-  static const Color primary = Color(0xFFFFFFFF);      // Blu-petrolio (Teal), professionale e moderno
-  static const Color background = Color.fromARGB(245, 255, 255, 255);   // MODIFICATO: rosa chiarissimo per lo sfondo
+  static const Color primary = Colors.white;      // Blu-petrolio (Teal), professionale e moderno
+  static const Color background = Color.fromARGB(255, 254, 212, 255);   // MODIFICATO: rosa chiarissimo per lo sfondo
   // Colori di Accento e Secondari
   static const Color secondary = Color(0xFFFFFFFF);     //  per accenti e pulsanti principali (FAB)
   
   // Colori per Superfici e Testi
-  static const Color surface =  Color.fromARGB(255, 255, 235, 250);       // rosa chiaro per Card, campi di testo, etc.
+  static const Color surface =  Color.fromARGB(255, 244, 181, 245);       // rosa chiaro per Card, campi di testo, etc.
   static const Color error = Color(0xFFFFFFFF);         // Rosso desaturato, standard per temi scuri
   
   // Colori "On" (per testo/icone sopra i colori principali)

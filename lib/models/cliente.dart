@@ -16,6 +16,7 @@ class Cliente {
   final int conteggioPreventivi;
   final double? prezzo;
   final String? colore; // *** NUOVO CAMPO: Colore per Dipendenti ***
+  final String? codiceFiscale; // 🟢 NUOVO CAMPO: Codice Fiscale
 
   Cliente({
     required this.idCliente,
@@ -32,6 +33,7 @@ class Cliente {
     this.conteggioPreventivi = 0,
     this.prezzo,
     this.colore, // *** NUOVO CAMPO AGGIUNTO ***
+    this.codiceFiscale, // 🟢 NUOVO CAMPO NEL COSTRUTTORE
   });
 
   factory Cliente.fromJson(Map<String, dynamic> json) {
@@ -65,6 +67,7 @@ class Cliente {
       conteggioPreventivi: conteggio,
       prezzo: prezzoVal,
       colore: json['colore']?.toString(), // *** ASSEGNAZIONE NUOVO CAMPO ***
+      codiceFiscale: json['codice_fiscale']?.toString(), // 🟢 NUOVO CAMPO NEL FROMJSON
     );
   }
 
@@ -91,6 +94,7 @@ class Cliente {
       conteggioPreventivi: 0,
       prezzo: null,
       colore: null, // *** NUOVO CAMPO ***
+      codiceFiscale: null, // 🟢 NUOVO CAMPO
     );
   }
 
@@ -105,6 +109,7 @@ class Cliente {
       'mail': mail,
       'note': note,
       'conteggio_preventivi': conteggioPreventivi,
+      'codice_fiscale': codiceFiscale, // 🟢 NUOVO CAMPO NEL TOJSON
       // Questi campi vengono inclusi solo se non sono nulli per ottimizzare Firestore
       if (idCliente.isNotEmpty) 'id_cliente': idCliente,
       if (telefono02 != null) 'telefono_02': telefono02,

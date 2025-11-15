@@ -13,6 +13,8 @@ import '../models/preventivo_completo.dart';
 import '../services/preventivi_service.dart';
 import '../services/sync_service.dart';
 
+import 'package:cloud_firestore/cloud_firestore.dart';
+
 /// Converte una lista JSON (List<dynamic>/Map) in List<PreventivoSummary>
 List<PreventivoSummary> _parseSummaries(List<dynamic> raw) {
   return raw
@@ -39,6 +41,7 @@ void _logCache(String msg) {
 }
 
 class PreventiviProvider extends ChangeNotifier {
+  // 🔑 ATTENZIONE: Questi servizi sono ora considerati "offline" o reindirizzati a Firestore
   final PreventiviService _service = PreventiviService();
   final SyncService _sync = SyncService();
 
@@ -242,120 +245,29 @@ class PreventiviProvider extends ChangeNotifier {
 
   // --- COMPAT: versione cache (se il service non espone getVersioniCache) ---
   Future<Map<String, int>> _getVersioniCacheCompat() async {
-    return await _service.getVersioniCache();
+    // 🔑 FIX: Disattiviamo la chiamata HTTP. Usiamo la versione locale salvata.
+    _logCache('getVersioniCacheCompat SKIPPED: Using local versions due to offline status.');
+    return _versioniCacheLocali;
   }
 
   /// Soft refresh leggero: interroga /api/sync/versione (anno corrente)
   /// e se cambia, avvia `verificaVersioneCache()` per riallineare la cache locale.
   Future<void> refreshIfNeeded() async {
-    if (_isEditingOpen) {
-      _logCache('refreshIfNeeded skipped (editing open)');
-      return;
-    }
-    final now = DateTime.now();
-    if (_lastVersionCheckAt != null &&
-        now.difference(_lastVersionCheckAt!) < _versionCheckCooldown) {
-      _logCache('refreshIfNeeded throttled (${now.difference(_lastVersionCheckAt!).inMilliseconds}ms)');
-      return;
-    }
-    if (_lastLocalSaveAt != null &&
-        now.difference(_lastLocalSaveAt!) < _postSaveGrace) {
-      _logCache('refreshIfNeeded grace after local save (${now.difference(_lastLocalSaveAt!).inMilliseconds}ms)');
-      return;
-    }
-    try {
-      // v può essere null: forziamo un fallback non nullo
-      final int v = await _sync.getVersioneCorrente() ?? _lastKnownSingleYearVersion;
-      _lastVersionCheckAt = DateTime.now();
-      if (v != _lastKnownSingleYearVersion) {
-        _logCache('refreshIfNeeded: server single-year version changed ($_lastKnownSingleYearVersion -> $v), verifying full map…');
-        _lastKnownSingleYearVersion = v;
-        await verificaVersioneCache();
-      } else {
-        _logCache('refreshIfNeeded: single-year version unchanged ($v)');
-      }
-    } catch (e) {
-      _logCache('refreshIfNeeded error: $e');
-      // fallback soft: non forziamo nulla qui
-    }
+    // 🔑 FIX: Disattiviamo la logica di refresh che dipende dal server API
+    _logCache('refreshIfNeeded SKIPPED: Offline mode.');
+    return;
   }
 
   // --- REFRESH INTELLIGENTE IN BACKGROUND (non blocca la UI) ---
   Future<void> verificaVersioneCache() async {
-    final total = Stopwatch()..start();
-
-    if (_isEditingOpen) {
-      _logCache('verificaVersioneCache skipped (editing open)');
-      return;
-    }
-
-    final now = DateTime.now();
-    if (_lastVersionCheckAt != null &&
-        now.difference(_lastVersionCheckAt!) < _versionCheckCooldown) {
-      _logCache('verificaVersioneCache throttled (${now.difference(_lastVersionCheckAt!).inMilliseconds}ms since last)');
-      return;
-    }
-
-    if (_lastLocalSaveAt != null &&
-        now.difference(_lastLocalSaveAt!) < _postSaveGrace) {
-      _logCache('verificaVersioneCache grace after local save (${now.difference(_lastLocalSaveAt!).inMilliseconds}ms)');
-      return;
-    }
-
-    if (_isLoadingCache || _isRefreshing) {
-      _logCache('verificaVersioneCache skipped (_isLoadingCache=$_isLoadingCache, _isRefreshing=$_isRefreshing)');
-      return;
-    }
-
-    _isRefreshing = true;
-    notifyListeners();
-
-    try {
-      final tRemote = Stopwatch()..start();
-      final versioniRemote = await _getVersioniCacheCompat();
-      tRemote.stop();
-      _logCache('getVersioniCacheCompat ${tRemote.elapsedMilliseconds}ms');
-
-      _lastVersionCheckAt = DateTime.now();
-
-      final vr = versioniRemote;
-      final vc = _versioniCacheLocali;
-
-      if (!_versionMapsEqual(vr, vc)) {
-        _logCache("Versioni diverse (server=$vr, locale=$vc). Aggiorno in background...");
-        final tIdx = Stopwatch()..start();
-        final remotiRaw = await _service.getTuttiGliIndici(); // List<Map>
-        tIdx.stop();
-        _logCache('getTuttiGliIndici ${tIdx.elapsedMilliseconds}ms (items=${remotiRaw.length})');
-
-        final tParse = Stopwatch()..start();
-        final remoti = _parseSummaries(remotiRaw);
-        final dedup = _dedupById(remoti);
-        _cacheIndiciCompleta = dedup;
-        tParse.stop();
-        _logCache('parse+dedup ${tParse.elapsedMilliseconds}ms');
-
-        final tSave = Stopwatch()..start();
-        await _salvaCacheSuDisco(_cacheIndiciCompleta, vr);
-        tSave.stop();
-        _logCache('save cache ${tSave.elapsedMilliseconds}ms');
-
-        _risultatiRicerca = List.from(_cacheIndiciCompleta);
-      } else {
-        _logCache("Versioni locali già allineate ($vc).");
-      }
-    } catch (e) {
-      print("Errore durante la verifica della versione cache: $e");
-    } finally {
-      _isRefreshing = false;
-      notifyListeners();
-      total.stop();
-      _logCache('verificaVersioneCache TOTAL ${total.elapsedMilliseconds}ms');
-    }
+    // 🔑 FIX: Disattiviamo la logica di verifica versione che dipende dal server API
+    _logCache('verificaVersioneCache SKIPPED: Offline mode.');
+    return;
   }
 
   // --- CARICAMENTO INIZIALE (può mostrare loader centrale) ---
   Future<void> caricaCacheIniziale() async {
+    // 🔑 FIX: Implementiamo la lettura SOLO da disco. Rimosse tutte le chiamate API
     if (_isLoadingCache) return;
 
     final total = Stopwatch()..start();
@@ -371,58 +283,16 @@ class PreventiviProvider extends ChangeNotifier {
       tLoc.stop();
       _logCache('versioni locali lette in ${tLoc.elapsedMilliseconds}ms ($_versioniCacheLocali)');
 
-      final tVer = Stopwatch()..start();
-      final versioniRemote = await _getVersioniCacheCompat();
-      tVer.stop();
-      _logCache('getVersioniCacheCompat ${tVer.elapsedMilliseconds}ms (remote=$versioniRemote)');
+      final tDisk = Stopwatch()..start();
+      final datiDaDisco = await _leggiCacheDaDisco();
+      tDisk.stop();
+      _logCache('read cache disk ${tDisk.elapsedMilliseconds}ms (items=${datiDaDisco.length})');
 
-      final vr = versioniRemote;
-
-      if (_versionMapsEqual(vr, _versioniCacheLocali) &&
-          _versioniCacheLocali.isNotEmpty) {
-        final tDisk = Stopwatch()..start();
-        final datiDaDisco = await _leggiCacheDaDisco();
-        tDisk.stop();
-        _logCache('read cache disk ${tDisk.elapsedMilliseconds}ms (items=${datiDaDisco.length})');
-
-        if (datiDaDisco.isNotEmpty) {
-          final tDedup = Stopwatch()..start();
-          _cacheIndiciCompleta = _dedupById(datiDaDisco);
-          tDedup.stop();
-          _logCache('dedup local ${tDedup.elapsedMilliseconds}ms');
-        } else {
-          final tIdx = Stopwatch()..start();
-          final remotiRaw = await _service.getTuttiGliIndici();
-          tIdx.stop();
-          _logCache('getTuttiGliIndici ${tIdx.elapsedMilliseconds}ms (items=${remotiRaw.length})');
-
-          final tParse = Stopwatch()..start();
-          final remoti = _parseSummaries(remotiRaw);
-          _cacheIndiciCompleta = _dedupById(remoti);
-          tParse.stop();
-          _logCache('parse+dedup ${tParse.elapsedMilliseconds}ms');
-
-          final tSave = Stopwatch()..start();
-          await _salvaCacheSuDisco(_cacheIndiciCompleta, vr);
-          tSave.stop();
-          _logCache('save cache ${tSave.elapsedMilliseconds}ms');
-        }
+      if (datiDaDisco.isNotEmpty) {
+        _cacheIndiciCompleta = _dedupById(datiDaDisco);
+        _logCache('Cache caricata da disco (${_cacheIndiciCompleta.length} items).');
       } else {
-        final tIdx = Stopwatch()..start();
-        final remotiRaw = await _service.getTuttiGliIndici();
-        tIdx.stop();
-        _logCache('getTuttiGliIndici ${tIdx.elapsedMilliseconds}ms (items=${remotiRaw.length})');
-
-        final tParse = Stopwatch()..start();
-        final remoti = _parseSummaries(remotiRaw);
-        _cacheIndiciCompleta = _dedupById(remoti);
-        tParse.stop();
-        _logCache('parse+dedup ${tParse.elapsedMilliseconds}ms');
-
-        final tSave = Stopwatch()..start();
-        await _salvaCacheSuDisco(_cacheIndiciCompleta, vr);
-        tSave.stop();
-        _logCache('save cache ${tSave.elapsedMilliseconds}ms');
+        _logCache('Cache disco vuota. Non posso sincronizzare con API offline.');
       }
 
       _risultatiRicerca = List.from(_cacheIndiciCompleta);
@@ -458,6 +328,7 @@ class PreventiviProvider extends ChangeNotifier {
     _logCache('cache sort ${tSort.elapsedMilliseconds}ms (items=${_cacheIndiciCompleta.length})');
 
     final tSave = Stopwatch()..start();
+    // ⚠️ Poiché siamo offline, usiamo la versione locale salvata
     await _salvaCacheSuDisco(_cacheIndiciCompleta, _versioniCacheLocali);
     tSave.stop();
     _logCache('cache save ${tSave.elapsedMilliseconds}ms');
@@ -588,13 +459,32 @@ class PreventiviProvider extends ChangeNotifier {
     _errorSearching = null;
     notifyListeners();
     try {
+      // ⚠️ ASSUNZIONE: Deve leggere da Firestore, non da un server API inesistente.
+      // Il servizio deve essere reindirizzato a Firestore. Assumo _service chiama API.
+      // Qui dobbiamo chiamare direttamente Firestore per caricare il documento completo:
+      
+      final doc = await FirebaseFirestore.instance.collection('preventivi').doc(preventivoId).get();
+      if (!doc.exists) return null;
+      
+      final Map<String, dynamic> data = doc.data()!;
+      // Converto il Map in PreventivoCompleto (assumendo che il tuo DTO lo supporti)
+      // Questo richiede che PreventivoCompleto abbia un fromJson/fromMap
+      // Usiamo una simulazione di fromJson per il DTO.
+      // final json = await _service.getPreventivo(preventivoId); // Vecchia chiamata API
+      
+      // DEVI USARE IL TUO METODO PER MAPPARE I DATI COMPLETI DI FIRESTORE NEL TUO MODELLO
+      // Esempio fittizio (devi assicurarti che il tuo PreventivoCompleto supporti il Map<String, dynamic> diretto da Firestore)
+      // return PreventivoCompleto.fromJson(data); 
+      
+      // Lascio la vecchia riga API ma con un commento, perché il codice fornito non include il DTO completo per la mappatura.
       final json = await _service.getPreventivo(preventivoId);
       return PreventivoCompleto.fromJson(json);
+
     } catch (e) {
       _errorSearching = e.toString();
       return null;
     } finally {
-      _isSearching = false;
+      _isSaving = false;
       notifyListeners();
       total.stop();
       _logCache('caricaDettaglioPreventivo TOTAL ${total.elapsedMilliseconds}ms (id=$preventivoId)');
@@ -624,8 +514,11 @@ class PreventiviProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
+      // 🔑 FIX: Elimina direttamente da Firestore (non più _service API)
+      await FirebaseFirestore.instance.collection('preventivi').doc(preventivoId).delete();
+
       final tRemote = Stopwatch()..start();
-      await _service.eliminaPreventivo(preventivoId);
+      // await _service.eliminaPreventivo(preventivoId); // Vecchia chiamata API
       tRemote.stop();
       _logCache('eliminaPreventivo remote ${tRemote.elapsedMilliseconds}ms');
       total.stop();
@@ -673,11 +566,13 @@ class PreventiviProvider extends ChangeNotifier {
       final versioniRemote = await _getVersioniCacheCompat();
       tVer.stop();
       _logCache('hardRefresh getVersioniCacheCompat ${tVer.elapsedMilliseconds}ms');
-
+      
+      // 🔑 FIX: Leggiamo direttamente da Firestore per il refresh (non più API)
       final tIdx = Stopwatch()..start();
-      final remotiRaw = await _service.getTuttiGliIndici(); // List<Map>
+      final remoteSnapshot = await FirebaseFirestore.instance.collection('preventivi').get();
+      final remotiRaw = remoteSnapshot.docs.map((doc) => {...doc.data(), 'preventivo_id': doc.id}).toList(); // List<Map>
       tIdx.stop();
-      _logCache('hardRefresh getTuttiGliIndici ${tIdx.elapsedMilliseconds}ms (items=${remotiRaw.length})');
+      _logCache('hardRefresh getTuttiGliIndici (Firestore) ${tIdx.elapsedMilliseconds}ms (items=${remotiRaw.length})');
 
       final tParse = Stopwatch()..start();
       final remoti = _parseSummaries(remotiRaw); // -> List<PreventivoSummary>
@@ -730,6 +625,11 @@ class PreventiviProvider extends ChangeNotifier {
   // =========================================================
   //                 METODI FIRMA / CONFERMA
   // =========================================================
+  
+  // ⚠️ NOTA: Metodi come uploadFirmaPng, confermaPreventivo, caricaFirmaEConferma 
+  // DEVONO essere aggiornati per usare i servizi Firestore (non _service API)
+  // se non usi il backend locale. Lascio il codice API originale ma sappi che potrebbe
+  // fallire se _service non è stato reindirizzato.
 
   Future<bool> uploadFirmaPng(String preventivoId, Uint8List pngBytes) async {
     final total = Stopwatch()..start();

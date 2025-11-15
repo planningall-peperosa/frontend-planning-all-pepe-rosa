@@ -26,6 +26,8 @@ import 'package:http/http.dart' as http;
 import '../widgets/vibration_settings_card.dart';
 
 import 'gestisci_contatto_screen.dart';
+import '../providers/pacchetti_eventi_provider.dart';
+import '../models/pacchetto_evento.dart';
 
 class SetupScreen extends StatefulWidget {
 
@@ -571,6 +573,290 @@ class _SetupScreenState extends State<SetupScreen> {
       ),
     );
   }
+
+
+
+  Widget _buildPacchettiEventiSection() {
+    final theme = Theme.of(context);
+    return Card(
+      color: theme.colorScheme.primary,
+      elevation: 2.0,
+      margin: const EdgeInsets.symmetric(vertical: 8.0),
+      child: ExpansionTile(
+        initiallyExpanded: false,
+        leading: Icon(Icons.celebration, color: theme.colorScheme.onPrimary),
+        iconColor: theme.colorScheme.onPrimary,
+        collapsedIconColor: theme.colorScheme.onPrimary,
+        title: Text('Gestione Eventi', style: TextStyle(fontWeight: FontWeight.bold, color: theme.colorScheme.onPrimary)),
+        onExpansionChanged: (expanded) {
+          if (expanded) context.read<PacchettiEventiProvider>().fetch();
+        },
+        children: [
+          Container(
+            color: theme.colorScheme.background,
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(8.0),
+                  child: Align(
+                    alignment: Alignment.centerRight,
+                    child: ElevatedButton.icon(
+                      icon: const Icon(Icons.add),
+                      label: const Text('Nuovo Evento'),
+                      onPressed: () => _openPacchettoEventoDialog(),
+                    ),
+                  ),
+                ),
+                Consumer<PacchettiEventiProvider>(
+                  builder: (ctx, prov, _) {
+                    if (prov.isLoading && prov.items.isEmpty) {
+                      return const Padding(
+                        padding: EdgeInsets.all(12.0),
+                        child: Center(child: CircularProgressIndicator()),
+                      );
+                    }
+                    if (prov.error != null) {
+                      return Padding(
+                        padding: const EdgeInsets.all(12.0),
+                        child: Text('Errore: ${prov.error}'),
+                      );
+                    }
+                    if (prov.items.isEmpty) {
+                      return const Padding(
+                        padding: EdgeInsets.all(12.0),
+                        child: Text('Nessun evento presente.'),
+                      );
+                    }
+
+                    final items = [...prov.items]..sort((a, b) {
+                    final an = (a.nome ?? '').toLowerCase();
+                    final bn = (b.nome ?? '').toLowerCase();
+
+                      return an.compareTo(bn);
+                    });
+
+                    return ListView.separated(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      itemCount: items.length,
+                      separatorBuilder: (_, __) => const Divider(height: 1),
+                      itemBuilder: (_, i) {
+                        final e = items[i];
+                        return Dismissible(
+                          key: ValueKey(e.id),
+                          direction: DismissDirection.endToStart,
+                          background: Container(
+                            color: Colors.red,
+                            alignment: Alignment.centerRight,
+                            padding: const EdgeInsets.only(right: 16),
+                            child: const Icon(Icons.delete, color: Colors.white),
+                          ),
+                          confirmDismiss: (_) async {
+                            final ok = await showDialog<bool>(
+                              context: context,
+                              builder: (_) => AlertDialog(
+                                title: const Text('Eliminare questo evento?'),
+                                content: Text(e.nome ?? 'Senza nome'),
+                                actions: [
+                                  TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Annulla')),
+                                  ElevatedButton(onPressed: () => Navigator.pop(context, true), child: const Text('Elimina')),
+                                ],
+                              ),
+                            );
+                            if (ok != true) return false;
+                            final done = await context.read<PacchettiEventiProvider>().remove(e.id);
+                            if (!done && mounted) {
+                              final err = context.read<PacchettiEventiProvider>().error ?? 'Eliminazione fallita';
+                              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+                            }
+                            return done;
+                          },
+                          child: ListTile(
+                            title: Text(e.nome ?? 'Senza nome'),
+                            subtitle: Text(e.propostaGastronomica ?? ''),
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                if (e.prezzoFisso != null) Text('€${e.prezzoFisso!.toStringAsFixed(2)}'),
+                                PopupMenuButton<String>(
+                                  onSelected: (v) async {
+                                    if (v == 'duplica') {
+                                      final ok = await context.read<PacchettiEventiProvider>().duplicate(e);
+                                      if (ok && mounted) {
+                                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Evento duplicato')));
+                                      }
+                                    }
+                                  },
+                                  itemBuilder: (_) => [
+                                    const PopupMenuItem(value: 'duplica', child: Text('Duplica')),
+                                  ],
+                                ),
+                              ],
+                            ),
+                            onTap: () => _openPacchettoEventoDialog(edit: e),
+                          ),
+                        );
+                      },
+                    );
+                  },
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _openPacchettoEventoDialog({PacchettoEvento? edit}) async {
+    final prov = context.read<PacchettiEventiProvider>();
+
+    final formKey = GlobalKey<FormState>();
+    final nomeCtrl = TextEditingController(text: edit?.nome ?? '');
+    final d1Ctrl   = TextEditingController(text: edit?.descrizione_1 ?? '');
+    final d2Ctrl   = TextEditingController(text: edit?.descrizione_2 ?? '');
+    final d3Ctrl   = TextEditingController(text: edit?.descrizione_3 ?? '');
+    final propCtrl = TextEditingController(text: edit?.propostaGastronomica ?? '');
+    final prezzoCtrl = TextEditingController(
+      text: (edit?.prezzoFisso != null) ? edit!.prezzoFisso!.toStringAsFixed(2).replaceAll('.', ',') : '',
+    );
+
+    bool saving = false;
+    bool deleting = false; // per icona cestino in header
+
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => StatefulBuilder(
+        builder: (ctx, setStateDialog) {
+          Future<void> _doSave() async {
+            // nessun campo obbligatorio per tua richiesta
+            setStateDialog(() => saving = true);
+
+            final prezzo = double.tryParse(prezzoCtrl.text.replaceAll(',', '.'));
+            final payload = {
+              'nome_evento': nomeCtrl.text.trim().isEmpty ? null : nomeCtrl.text.trim(),
+              'descrizione_1': d1Ctrl.text.trim().isEmpty ? null : d1Ctrl.text.trim(),
+              'descrizione_2': d2Ctrl.text.trim().isEmpty ? null : d2Ctrl.text.trim(),
+              'descrizione_3': d3Ctrl.text.trim().isEmpty ? null : d3Ctrl.text.trim(),
+              'proposta_gastronomica': propCtrl.text.trim().isEmpty ? null : propCtrl.text.trim(),
+              'prezzo': prezzo, // null se vuoto
+            };
+
+            final ok = edit == null
+                ? await prov.add(payload)
+                : await prov.update(edit.id, payload);
+
+            if (!ctx.mounted) return;
+            setStateDialog(() => saving = false);
+
+            if (ok) {
+              Navigator.pop(ctx);
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text(edit == null ? 'Evento creato' : 'Evento aggiornato')),
+              );
+            } else {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text(prov.error ?? 'Operazione non riuscita'), backgroundColor: Colors.red),
+              );
+            }
+          }
+
+          Future<void> _doDelete() async {
+            if (edit == null) return;
+            final conferma = await showDialog<bool>(
+              context: ctx,
+              builder: (dctx) => AlertDialog(
+                title: const Text('Eliminare l’evento?'),
+                content: Text(edit.nome ?? 'Senza nome'),
+                actions: [
+                  TextButton(onPressed: () => Navigator.pop(dctx, false), child: const Text('Annulla')),
+                  ElevatedButton(onPressed: () => Navigator.pop(dctx, true), child: const Text('Elimina')),
+                ],
+              ),
+            );
+            if (conferma != true) return;
+
+            setStateDialog(() => deleting = true);
+            final ok = await prov.remove(edit.id);
+            if (!ctx.mounted) return;
+            setStateDialog(() => deleting = false);
+
+            if (ok) {
+              Navigator.pop(ctx);
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Evento eliminato')));
+            } else {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text(prov.error ?? 'Eliminazione fallita'), backgroundColor: Colors.red),
+              );
+            }
+          }
+
+          return AbsorbPointer(
+            absorbing: saving || deleting,
+            child: AlertDialog(
+              title: Row(
+                children: [
+                  Expanded(child: Text(edit == null ? 'Nuovo evento' : 'Modifica evento')),
+                  if (edit != null)
+                    IconButton(
+                      tooltip: 'Elimina',
+                      icon: const Icon(Icons.delete_outline),
+                      onPressed: deleting ? null : _doDelete,
+                    ),
+                ],
+              ),
+              contentPadding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+              content: SizedBox(
+                width: double.maxFinite,
+                child: SingleChildScrollView(
+                  child: Form(
+                    key: formKey,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        TextFormField(controller: nomeCtrl, decoration: const InputDecoration(labelText: 'Nome evento')),
+                        const SizedBox(height: 8),
+                        TextFormField(controller: d1Ctrl, decoration: const InputDecoration(labelText: 'Descrizione 1')),
+                        const SizedBox(height: 8),
+                        TextFormField(controller: d2Ctrl, decoration: const InputDecoration(labelText: 'Descrizione 2')),
+                        const SizedBox(height: 8),
+                        TextFormField(controller: d3Ctrl, decoration: const InputDecoration(labelText: 'Descrizione 3')),
+                        const SizedBox(height: 8),
+                        TextFormField(
+                          controller: propCtrl,
+                          decoration: const InputDecoration(labelText: 'Proposta gastronomica'),
+                          maxLines: 3,
+                        ),
+                        const SizedBox(height: 8),
+                        TextFormField(
+                          controller: prezzoCtrl,
+                          decoration: const InputDecoration(labelText: 'Prezzo (€)'),
+                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              actions: [
+                TextButton(onPressed: saving || deleting ? null : () => Navigator.pop(ctx), child: const Text('Annulla')),
+                ElevatedButton(
+                  onPressed: saving || deleting ? null : _doSave,
+                  child: saving
+                      ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                      : Text(edit == null ? 'Crea' : 'Salva'),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+
+
 
 
   Future<void> _openSelettorePiatti({
@@ -1177,20 +1463,17 @@ class _SetupScreenState extends State<SetupScreen> {
     });
   }
 
-  Future<void> _refreshData() async {
-    await Future.wait([
-      // Assicurati che questi provider legacy siano ancora necessari e funzionanti
-      Provider.of<DipendentiProvider>(context, listen: false).fetchDipendenti(), // 🚨 NUOVO: CARICAMENTO DIPENDENTI DA FIRESTORE
-      Provider.of<TurniProvider>(context, listen: false).fetchTipiTurno(),
-
-      // Già refattorizzato
-      Provider.of<ClientiProvider>(context, listen: false).fetchAllContacts(force: true),
-
-      Provider.of<PiattiProvider>(context, listen: false).fetch(),
-      Provider.of<MenuTemplatesProvider>(context, listen: false).fetch(),
-    ]);
-    await _fetchAutorizzazioniApp();
-  }
+Future<void> _refreshData() async {
+  await Future.wait([
+    Provider.of<DipendentiProvider>(context, listen: false).fetchDipendenti(),
+    Provider.of<TurniProvider>(context, listen: false).fetchTipiTurno(),
+    Provider.of<ClientiProvider>(context, listen: false).fetchAllContacts(force: true),
+    Provider.of<PiattiProvider>(context, listen: false).fetch(),
+    Provider.of<MenuTemplatesProvider>(context, listen: false).fetch(),
+    Provider.of<PacchettiEventiProvider>(context, listen: false).fetch(), // ⬅️ AGGIUNTO
+  ]);
+  await _fetchAutorizzazioniApp();
+}
 
 
 
@@ -1216,6 +1499,10 @@ class _SetupScreenState extends State<SetupScreen> {
               _buildMenuTemplatesSection(),
               const SizedBox(height: 16),
 
+              _buildPacchettiEventiSection(),
+              const SizedBox(height: 16),
+
+
               const VibrationSettingsCard(),
               const SizedBox(height: 16),
 
@@ -1231,7 +1518,7 @@ class _SetupScreenState extends State<SetupScreen> {
 
 // lib/screens/setup_screen.dart -> SOSTITUISCI QUESTA FUNZIONE
 
-  Widget _buildAutorizzazioniAppSection() {
+   Widget _buildAutorizzazioniAppSection() {
     final theme = Theme.of(context);
     
     return Card(
@@ -1314,6 +1601,9 @@ class _SetupScreenState extends State<SetupScreen> {
       ),
     );
   }   
+
+
+
 
   Widget _buildDipendentiSection() {
     final theme = Theme.of(context);

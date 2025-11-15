@@ -94,25 +94,54 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
     super.dispose();
   }
 
+
+
   void _procediAiDatiCliente() {
     setState(() {
       _haTentatoDiAndareAvanti = true;
     });
     final preventivoBuilder = Provider.of<PreventivoBuilderProvider>(context, listen: false);
+    
+    // 🟢 NUOVO FLAG
+    final bool isPacchettoFisso = preventivoBuilder.isPacchettoFisso;
 
     final formOk = _formKey.currentState!.validate();
+    
+    // 🔑 NUOVA LOGICA DI VALIDAZIONE
+    // Nome evento (sempre richiesto) e Data Evento (sempre richiesta)
+    final nomeOk = preventivoBuilder.nomeEvento != null && preventivoBuilder.nomeEvento!.isNotEmpty;
     final dataOk = preventivoBuilder.dataEvento != null;
-    final tipoPastoOk = (preventivoBuilder.tipoPasto != null && preventivoBuilder.tipoPasto!.isNotEmpty);
+    
+    // Numero Ospiti è obbligatorio SOLO se NON è Pacchetto Fisso
+    final ospitiOk = isPacchettoFisso || ((preventivoBuilder.numeroOspiti ?? 0) > 0);
 
-    if (formOk && dataOk && tipoPastoOk) {
+    // Tipo Pasto è obbligatorio SOLO se NON è Pacchetto Fisso
+    final tipoPastoOk = isPacchettoFisso || (preventivoBuilder.tipoPasto != null && preventivoBuilder.tipoPasto!.isNotEmpty);
+
+    // Il controllo finale del Form e della data è combinato
+    final tuttoOk = formOk && nomeOk && dataOk && ospitiOk && tipoPastoOk;
+    
+    // --- FINE NUOVA LOGICA ---
+
+    if (tuttoOk) {
       final scontoVal = double.tryParse(_scontoController.text.replaceAll(',', '.')) ?? 0.0;
       preventivoBuilder.setSconto(scontoVal);
 
       Navigator.push(context, MaterialPageRoute(builder: (context) => const DatiClienteScreen()));
     } else {
+      // 🟢 MESSAGGIO DI ERRORE PIÙ INFORMATIVO
+      String errorMessage = 'Controlla i campi obbligatori: Nome, Data';
+      if (!isPacchettoFisso) {
+         errorMessage += ', Ospiti e Pranzo/Cena';
+      }
+      if (!nomeOk) errorMessage = 'Inserisci il Nome Evento';
+      if (!dataOk) errorMessage = 'Seleziona la Data Evento';
+      if (!ospitiOk && !isPacchettoFisso) errorMessage = 'Inserisci il Numero Ospiti';
+      if (!tipoPastoOk && !isPacchettoFisso) errorMessage = 'Seleziona Pranzo o Cena';
+
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Controlla i campi: Nome, Ospiti, Data e Pranzo/Cena sono obbligatori.'),
+        SnackBar(
+          content: Text(errorMessage),
           backgroundColor: Colors.red,
         ),
       );
@@ -403,7 +432,7 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
             ElevatedButton.icon(
               icon: const Icon(Icons.arrow_back_ios),
               label: const Text(
-                "           Menu                           ",
+                "Menu   ",
                 style: TextStyle(fontWeight: FontWeight.w700),
               ),
               onPressed: () {
@@ -441,16 +470,15 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
     );
   }
 
+
+
   Widget _buildDatiEventoSection(PreventivoBuilderProvider builder) {
     final numeroOspiti = builder.numeroOspiti ?? 0;
     final numeroBambini = builder.numeroBambini;
     final adulti = (numeroOspiti - numeroBambini).clamp(0, numeroOspiti);
 
-    // --- AGGIUNTA CHIAVE ---
-    // Usiamo il dato del builder, che è stato popolato dal caricamento
-    final dataEventoText = builder.dataEvento == null
-        ? 'Seleziona'
-        : DateFormat('dd/MM/yyyy').format(builder.dataEvento!);
+    // 🟢 NUOVO FLAG
+    final bool isPacchettoFisso = builder.isPacchettoFisso;
     // ----------------------
 
     return Column(
@@ -470,9 +498,17 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
             Expanded(
               child: TextFormField(
                 controller: _ospitiController,
-                decoration: const InputDecoration(labelText: 'Numero Ospiti (totale)'),
+                // 🔑 MODIFICA CHIAVE: Disabilita se Pacchetto Fisso
+                enabled: !isPacchettoFisso, 
+                decoration: InputDecoration(
+                  labelText: 'Numero Ospiti (totale)',
+                  hintText: isPacchettoFisso ? 'Numero fisso non richiesto' : null,
+                ),
                 keyboardType: TextInputType.number,
                 validator: (v) {
+                  // 🔑 Validazione richiesta SOLO se NON è Pacchetto Fisso
+                  if (isPacchettoFisso) return null; 
+                  
                   if (v == null || v.isEmpty) return 'Obbligatorio';
                   if (int.tryParse(v) == null) return 'Numero non valido';
                   return null;
@@ -497,7 +533,6 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
                         : null,
                   ),
                   child: Text(
-                    // QUESTA RIGHA È LA CHIAVE: leggerà direttamente dal Provider
                     builder.dataEvento == null
                         ? 'Seleziona'
                         : DateFormat('dd/MM/yyyy').format(builder.dataEvento!),
@@ -508,49 +543,55 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
             ),
           ],
         ),
-        const SizedBox(height: 16),
-        Text("Menu Bambini", style: Theme.of(context).textTheme.titleMedium),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            Expanded(
-              child: TextFormField(
-                initialValue: builder.numeroBambini > 0 ? builder.numeroBambini.toString() : '',
-                decoration: const InputDecoration(labelText: 'Numero bambini'),
-                keyboardType: TextInputType.number,
-                onChanged: (v) {
-                  final n = int.tryParse(v) ?? 0;
-                  builder.setNumeroBambini(n);
-                },
+        
+        // 🟢 SEZIONE MENU BAMBINI (già condizionale)
+        if (!isPacchettoFisso) ...[
+          const SizedBox(height: 16),
+          Text("Menu Bambini", style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: TextFormField(
+                  initialValue: builder.numeroBambini > 0 ? builder.numeroBambini.toString() : '',
+                  decoration: const InputDecoration(labelText: 'Numero bambini'),
+                  keyboardType: TextInputType.number,
+                  onChanged: (v) {
+                    final n = int.tryParse(v) ?? 0;
+                    builder.setNumeroBambini(n);
+                  },
+                ),
               ),
-            ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: TextFormField(
-                initialValue: builder.prezzoMenuBambino > 0
-                    ? builder.prezzoMenuBambino.toStringAsFixed(2).replaceAll('.', ',')
-                    : '',
-                decoration:
-                    const InputDecoration(labelText: 'Prezzo menu bambino', prefixText: '€ '),
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                onChanged: (v) {
-                  final prezzo = double.tryParse(v.replaceAll(',', '.')) ?? 0.0;
-                  builder.setPrezzoMenuBambino(prezzo);
-                },
+              const SizedBox(width: 16),
+              Expanded(
+                child: TextFormField(
+                  initialValue: builder.prezzoMenuBambino > 0
+                      ? builder.prezzoMenuBambino.toStringAsFixed(2).replaceAll('.', ',')
+                      : '',
+                  decoration:
+                      const InputDecoration(labelText: 'Prezzo menu bambino', prefixText: '€ '),
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  onChanged: (v) {
+                    final prezzo = double.tryParse(v.replaceAll(',', '.')) ?? 0.0;
+                    builder.setPrezzoMenuBambino(prezzo);
+                  },
+                ),
               ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 8),
-        TextFormField(
-          initialValue: builder.menuBambini,
-          decoration: const InputDecoration(
-            labelText: 'Piatti menu bambini',
-            hintText: 'Es. Pasta al pomodoro, cotoletta e patatine…',
+            ],
           ),
-          maxLines: 2,
-          onChanged: builder.setMenuBambini,
-        ),
+          const SizedBox(height: 8),
+          TextFormField(
+            initialValue: builder.menuBambini,
+            decoration: const InputDecoration(
+              labelText: 'Piatti menu bambini',
+              hintText: 'Es. Pasta al pomodoro, cotoletta e patatine…',
+            ),
+            maxLines: 2,
+            onChanged: builder.setMenuBambini,
+          ),
+        ],
+        // -------------------------------------------------------------
+
         const SizedBox(height: 8),
         Align(
           alignment: Alignment.centerRight,
@@ -560,6 +601,7 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
       ],
     );
   }
+
 
   Widget _buildServiziExtraSection(
       List<String> allRuoli, PreventivoBuilderProvider builder) {
@@ -578,7 +620,7 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
     ];
 
     // ⚠️ MODIFICA: rimosso "buffet di dolci" (ora gestito in crea_preventivo_screen)
-    final serviziConNota = ['open bar'];
+    final serviziConNota = ['open bar', 'beverage'];
     final serviziSemplici = ['cream tart', 'confettata'];
 
     return Column(
@@ -746,33 +788,112 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
 
   Widget _buildServizioSempliceRow(
       String nomeServizio, PreventivoBuilderProvider builder) {
+
+    // 🔑 MODIFICA CHIAVE: Lista dei servizi che richiedono input aggiuntivo
+    final serviziComplessi = ['confettata', 'cream tart'];
+    final bool isComplex = serviziComplessi.contains(nomeServizio.toLowerCase()); 
+
     final isSelected = builder.serviziExtra.containsKey(nomeServizio);
+    final servizio = builder.serviziExtra[nomeServizio];
+    
+    if (!isComplex) {
+      // Gestione standard (solo toggle) per tutti gli altri servizi
+      return Card(
+        margin: const EdgeInsets.only(bottom: 8),
+        child: SwitchListTile(
+          title: Text(nomeServizio.capitalize()),
+          value: isSelected,
+          onChanged: (value) => builder.toggleServizio(nomeServizio, value),
+        ),
+      );
+    }
+
+    // LOGICA COMPLESSA PER CONFETTATA E CREAM TART
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
-      child: SwitchListTile(
-        title: Text(nomeServizio.capitalize()),
-        value: isSelected,
-        onChanged: (value) => builder.toggleServizio(nomeServizio, value),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4.0),
+        child: Column(
+          children: [
+            SwitchListTile(
+              title: Text(nomeServizio.capitalize()),
+              value: isSelected,
+              onChanged: (value) => builder.toggleServizio(nomeServizio, value),
+            ),
+            if (isSelected)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                child: Column(
+                  children: [
+                    Row(
+                      children: [
+                        // Casella di testo per le Note
+                        Expanded(
+                          flex: 3,
+                          child: TextFormField(
+                            // 🔑 AGGIUNTA CHIAVE STATICA
+                            key: ValueKey('${nomeServizio}_note_field'), 
+                            initialValue: servizio?.note,
+                            decoration:
+                                InputDecoration(labelText: 'Note ${nomeServizio.capitalize()}', hintText: 'Dettagli, colori, gusti...'),
+                            onChanged: (value) => builder.setServizioNota(nomeServizio, value),
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        // Casella di testo per il Prezzo
+                        Expanded(
+                          flex: 2,
+                          child: TextFormField(
+                            // ❌ RIMOZIONE DELLA CHIAVE DINAMICA: L'initialValue gestirà il ricaricamento del valore,
+                            // ma il widget non sarà distrutto a ogni keystroke.
+                            initialValue: ((servizio?.prezzo) ?? 0) > 0
+                                ? ((servizio?.prezzo ?? 0)
+                                    .toStringAsFixed(2)
+                                    .replaceAll('.', ','))
+                                : '',
+                            decoration:
+                                const InputDecoration(labelText: 'Prezzo', prefixText: '€ '),
+                            keyboardType:
+                                const TextInputType.numberWithOptions(decimal: true),
+                            onChanged: (value) {
+                              final prezzo =
+                                  double.tryParse(value.replaceAll(',', '.')) ?? 0.0;
+                              builder.aggiornaPrezzoServizio(nomeServizio, prezzo);
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }
+
 
   Widget _buildRiepilogoCosti(PreventivoBuilderProvider b) {
     final textStyle = Theme.of(context).textTheme.bodyLarge;
     final totalStyle =
         textStyle?.copyWith(fontWeight: FontWeight.bold, fontSize: 18);
 
+    final bool isPacchettoFisso = b.isPacchettoFisso; // 🟢 FLAG PACCHETTO
+
     final ospiti = b.numeroOspiti ?? 0;
     final bambini = b.numeroBambini;
     final adulti = (ospiti - bambini).clamp(0, ospiti);
 
-    // ⚠️ NOVITÀ: costo pacchetto welcome+dolci (o singoli) e label da Provider
-    final double costoPacchetto = b.costoPacchettoWelcomeDolci; // 0, 5*ospiti, 8*ospiti, 10*ospiti
-    final bool mostraPacchetto = costoPacchetto > 0;
-    final String labelPacchetto = b.labelPacchettoWelcomeDolci ?? '';
+    // ✅ NOTA: Prendo il prezzo pacchetto direttamente dal provider (o sarà 0.0)
+    final double prezzoPacchetto = b.prezzoPacchettoSelezionato; 
+    
+    // ✅ NOTA: Questi campi sono usati solo se NON è pacchetto fisso
+    final double costoPacchettoWelcome = b.costoPacchettoWelcomeDolci;
+    final String? labelPacchettoWelcome = b.labelPacchettoWelcomeDolci;
 
-    final double subtotaleConPacchetto = b.subtotale + costoPacchetto;
-    final double totaleConPacchetto = subtotaleConPacchetto - b.sconto;
+    final double subtotale = b.subtotale;          
+    final double totale = b.totaleFinale;         
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -780,32 +901,50 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
         Text("Riepilogo Costi", style: Theme.of(context).textTheme.titleLarge),
         const Divider(height: 24),
 
-        // 🔹 Riga opzionale PRIMA di "Menu Adulti"
-        if (mostraPacchetto)
+        // 🟢 LOGICA CONDIZIONALE COSTI MENU
+        if (isPacchettoFisso)
+          // ➡️ CASO PACCHETTO FISSO
           ListTile(
-            title: Text(labelPacchetto, style: textStyle),
-            trailing: Text("€ ${costoPacchetto.toStringAsFixed(2)}", style: textStyle),
+            title: Text("Prezzo Pacchetto", style: totalStyle),
+            trailing: Text("€ ${prezzoPacchetto.toStringAsFixed(2)}", style: totalStyle),
+            contentPadding: EdgeInsets.zero,
+          )
+        else ...[
+          // ⬅️ CASO MENU A PORTATE
+          if (labelPacchettoWelcome != null && costoPacchettoWelcome > 0)
+            ListTile(
+              title: Text(labelPacchettoWelcome, style: textStyle),
+              trailing: Text("€ ${costoPacchettoWelcome.toStringAsFixed(2)}", style: textStyle),
+              contentPadding: EdgeInsets.zero,
+            ),
+          
+          ListTile(
+            title: Text("Menu Adulti ($adulti × € ${b.prezzoMenuAdulto.toStringAsFixed(2)})", style: textStyle),
+            trailing: Text("€ ${b.costoMenuAdulti.toStringAsFixed(2)}", style: textStyle),
+            contentPadding: EdgeInsets.zero,
           ),
+          ListTile(
+            title: Text(
+                "Menu Bambini ($bambini × € ${b.prezzoMenuBambino.toStringAsFixed(2)})",
+                style: textStyle),
+            trailing:
+                Text("€ ${b.costoMenuBambini.toStringAsFixed(2)}", style: textStyle),
+            contentPadding: EdgeInsets.zero,
+          ),
+        ],
+        // ----------------------------------
 
-        ListTile(
-          title: Text("Menu Adulti ($adulti × € ${b.prezzoMenuAdulto.toStringAsFixed(2)})", style: textStyle),
-          trailing: Text("€ ${b.costoMenuAdulti.toStringAsFixed(2)}", style: textStyle),
-        ),
-        ListTile(
-          title: Text(
-              "Menu Bambini ($bambini × € ${b.prezzoMenuBambino.toStringAsFixed(2)})",
-              style: textStyle),
-          trailing:
-              Text("€ ${b.costoMenuBambini.toStringAsFixed(2)}", style: textStyle),
-        ),
+        // Costo Servizi Extra (Sempre presente)
         ListTile(
           title: Text("Costo Servizi Extra", style: textStyle),
           trailing: Text("€ ${b.costoServizi.toStringAsFixed(2)}", style: textStyle),
+          contentPadding: EdgeInsets.zero,
         ),
         const Divider(),
         ListTile(
           title: Text("Subtotale", style: totalStyle),
-          trailing: Text("€ ${subtotaleConPacchetto.toStringAsFixed(2)}", style: totalStyle),
+          trailing: Text("€ ${subtotale.toStringAsFixed(2)}", style: totalStyle),
+          contentPadding: EdgeInsets.zero,
         ),
         CheckboxListTile(
           title: const Text("Applica Sconto"),
@@ -841,9 +980,10 @@ class _ServiziExtraScreenState extends State<ServiziExtraScreen> {
           title: Text("TOTALE FINALE",
               style: totalStyle?.copyWith(
                   color: Colors.black)),
-          trailing: Text("€ ${totaleConPacchetto.toStringAsFixed(2)}",
+          trailing: Text("€ ${totale.toStringAsFixed(2)}",
               style: totalStyle?.copyWith(
                   color: Colors.black)),
+          contentPadding: EdgeInsets.zero,
         ),
       ],
     );

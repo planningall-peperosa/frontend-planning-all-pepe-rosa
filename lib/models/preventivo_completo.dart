@@ -31,6 +31,9 @@ class PreventivoCompleto {
   final String? preventivoId;
   final DateTime? dataCreazione;
 
+  // ✅ NEW: note integrative
+  final String? noteIntegrative;
+
   PreventivoCompleto({
     required this.menu,
     required this.cliente,
@@ -50,6 +53,7 @@ class PreventivoCompleto {
     this.status,
     this.preventivoId,
     this.dataCreazione,
+    this.noteIntegrative, // ✅ aggiunto nel costruttore
   });
 
   factory PreventivoCompleto.fromJson(Map<String, dynamic> json) {
@@ -90,10 +94,12 @@ class PreventivoCompleto {
       noteSconto: json['note_sconto'] as String?,
       acconto: (json['acconto'] as num?)?.toDouble(),
       tipoPasto: json['tipo_pasto'] as String?,
-
       status: json['status'] as String?,
       preventivoId: json['preventivo_id'] as String?,
       dataCreazione: _parseDateTime(json['data_creazione']),
+
+      // ✅ nuovo campo note integrative (robusto: snake_case o camelCase)
+      noteIntegrative: ((json['note_integrative'] ?? json['noteIntegrative']) as String?)?.trim(),
     );
   }
 
@@ -122,6 +128,9 @@ class PreventivoCompleto {
       'status': status,
       'preventivo_id': preventivoId,
       'data_creazione': dataCreazione?.toIso8601String(),
+
+      // ✅ nuovo campo note integrative (salviamo in snake_case per il DB)
+      'note_integrative': noteIntegrative,
     };
   }
 

@@ -1,1 +1,47 @@
-{"flutter":{"platforms":{"android":{"default":{"projectId":"peperosa-planning-v2","appId":"1:394570910879:android:72deab5455800825c126aa","fileOutput":"android/app/google-services.json"}},"ios":{"default":{"projectId":"peperosa-planning-v2","appId":"1:394570910879:ios:04d7fafff8fb5588c126aa","uploadDebugSymbols":false,"fileOutput":"ios/Runner/GoogleService-Info.plist"}},"macos":{"default":{"projectId":"peperosa-planning-v2","appId":"1:394570910879:ios:04d7fafff8fb5588c126aa","uploadDebugSymbols":false,"fileOutput":"macos/Runner/GoogleService-Info.plist"}},"dart":{"lib/firebase_options.dart":{"projectId":"peperosa-planning-v2","configurations":{"android":"1:394570910879:android:72deab5455800825c126aa","ios":"1:394570910879:ios:04d7fafff8fb5588c126aa","macos":"1:394570910879:ios:04d7fafff8fb5588c126aa","web":"1:394570910879:web:1f5db25ee90f2572c126aa","windows":"1:394570910879:web:e3b9ffc2ce852fe1c126aa"}}}}}}
+{
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "peperosa-planning-v2",
+          "appId": "1:394570910879:android:72deab5455800825c126aa",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "ios": {
+        "default": {
+          "projectId": "peperosa-planning-v2",
+          "appId": "1:394570910879:ios:04d7fafff8fb5588c126aa",
+          "uploadDebugSymbols": false,
+          "fileOutput": "ios/Runner/GoogleService-Info.plist"
+        }
+      },
+      "macos": {
+        "default": {
+          "projectId": "peperosa-planning-v2",
+          "appId": "1:394570910879:ios:04d7fafff8fb5588c126aa",
+          "uploadDebugSymbols": false,
+          "fileOutput": "macos/Runner/GoogleService-Info.plist"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "peperosa-planning-v2",
+          "configurations": {
+            "android": "1:394570910879:android:72deab5455800825c126aa",
+            "ios": "1:394570910879:ios:04d7fafff8fb5588c126aa",
+            "macos": "1:394570910879:ios:04d7fafff8fb5588c126aa",
+            "web": "1:394570910879:web:1f5db25ee90f2572c126aa",
+            "windows": "1:394570910879:web:e3b9ffc2ce852fe1c126aa"
+          }
+        }
+      }
+    }
+  },
+  "firestore": {
+    "database": "(default)",
+    "location": "eur3",
+    "rules": "firestore.rules",
+    "indexes": "no"
+  }
+}
